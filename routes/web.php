@@ -13,12 +13,10 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
-use App\Http\Controllers\HomeController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BookingController;
 use App\Http\Controllers\Admin\ArmadaController;
 use App\Http\Controllers\Admin\TransactionController;
-use App\Http\Controllers\Admin\RouteController;
 use App\Http\Controllers\Admin\BookingController as AdminBookingController;
 
 use Inertia\Inertia;
