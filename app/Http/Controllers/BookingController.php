@@ -31,7 +31,12 @@ class BookingController extends Controller
 
         $armada = Armada::findOrFail($data['armada_id']);
 
-        // Calculate total: seats * armada generic price (assuming price_per_km is now price_per_seat)
+        // Check availability (optional refinement)
+        if ($data['seats'] > $armada->capacity) {
+            return back()->with('error', 'Not enough seats available.');
+        }
+
+        // Calculate total: seats * armada price per seat
         $total = $data['seats'] * $armada->price_per_km;
 
         $booking = Booking::create([
@@ -46,7 +51,7 @@ class BookingController extends Controller
         // Trigger event
         \App\Events\NewOrderReceived::dispatch($booking);
 
-        return redirect()->route('bookings.index')->with('success', 'Booking berhasil dibuat');
+        return redirect()->route('home')->with('success', 'Booking Successful!');
     }
 }
 

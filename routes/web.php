@@ -13,48 +13,25 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
-use App\Http\Controllers\HomeController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BookingController;
 use App\Http\Controllers\Admin\ArmadaController;
 use App\Http\Controllers\Admin\TransactionController;
-use App\Http\Controllers\Admin\RouteController;
 use App\Http\Controllers\Admin\BookingController as AdminBookingController;
+use App\Http\Controllers\CatalogController;
 
 use Inertia\Inertia;
 
+use App\Models\Armada;
+
 Route::get('/', function () {
-    return Inertia::render('Welcome');
+    $events = Armada::where('status', 'available')->get();
+    return Inertia::render('Home', [
+        'events' => $events
+    ]);
 })->name('home');
 
-Route::get('/catalog', function () {
-    // Mock data for catalog, later fetch from DB
-    return Inertia::render('Catalog', [
-        'events' => [
-            [
-                'id' => 1,
-                'title' => 'VIP Concert Pass',
-                'price' => 750000,
-                'date' => '2025-12-25',
-                'image' => 'https://images.unsplash.com/photo-1459749411177-287ce35e8b0f?ixlib=rb-1.2.1&auto=format&fit=crop&w=1350&q=80',
-            ],
-            [
-                'id' => 2,
-                'title' => 'Executive Bus Trip',
-                'price' => 500000,
-                'date' => '2025-12-30',
-                'image' => 'https://images.unsplash.com/photo-1570125909232-eb263c188f7e?ixlib=rb-1.2.1&auto=format&fit=crop&w=1351&q=80',
-            ],
-            [
-                'id' => 3,
-                'title' => 'City Tour Special',
-                'price' => 250000,
-                'date' => '2026-01-01',
-                'image' => 'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?ixlib=rb-1.2.1&auto=format&fit=crop&w=1949&q=80',
-            ],
-        ]
-    ]);
-})->name('catalog.index');
+Route::get('/catalog', [CatalogController::class, 'index'])->name('catalog');
 
 // Auth
 Route::get('/login', [AuthController::class, 'showLogin'])->name('login');

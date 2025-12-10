@@ -75,7 +75,7 @@ export default function Catalog({ events }) {
                 <div className="h-full flex flex-col bg-white shadow-xl overflow-y-scroll">
                   <div className="py-6 px-4 sm:px-6 bg-accent">
                     <div className="flex items-center justify-between">
-                      <h2 className="text-lg font-medium text-white">Checkout</h2>
+                      <h2 className="text-lg font-medium text-white">Reference ID: {selectedEvent.level}</h2>
                       <div className="ml-3 h-7 flex items-center">
                         <button onClick={closeDrawer} className="bg-transparent rounded-md text-gray-200 hover:text-white focus:outline-none">
                           <span className="sr-only">Close panel</span>
@@ -86,29 +86,33 @@ export default function Catalog({ events }) {
                       </div>
                     </div>
                     <div className="mt-1">
-                      <p className="text-sm text-gray-300">Complete your reservation for {selectedEvent.title}.</p>
+                      <p className="text-xl font-bold text-white mb-1">{selectedEvent.title}</p>
+                      <p className="text-sm text-gray-200">{selectedEvent.route}</p>
                     </div>
                   </div>
                   <div className="relative flex-1 py-6 px-4 sm:px-6">
-                    {/* Checkout Form Placeholder */}
-                    <div className="space-y-6">
-                      <div>
-                        <label htmlFor="name" className="block text-sm font-medium text-gray-700">Full Name</label>
-                        <input type="text" name="name" id="name" className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-accent focus:border-accent sm:text-sm" />
-                      </div>
-                      <div>
-                        <label htmlFor="email" className="block text-sm font-medium text-gray-700">Email</label>
-                        <input type="email" name="email" id="email" className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-accent focus:border-accent sm:text-sm" />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700">Total Price</label>
-                        <div className="mt-1 p-3 bg-gray-50 rounded-md text-lg font-bold text-gray-900 border border-gray-200">
-                          IDR {selectedEvent.price.toLocaleString('id-ID')}
-                        </div>
-                      </div>
+                    <div className="mb-6">
+                      <img src={selectedEvent.image} alt={selectedEvent.title} className="w-full h-48 object-cover rounded-lg shadow-sm mb-4" />
 
+                      <h3 className="text-md font-bold text-gray-900 mb-2">Service & Amenities</h3>
+                      <p className="text-sm text-gray-600 mb-4 whitespace-pre-line">{selectedEvent.amenities}</p>
+
+                      <h3 className="text-md font-bold text-gray-900 mb-2">Seat Configuration</h3>
+                      <p className="text-sm text-gray-600 mb-4">{selectedEvent.seat_config}</p>
+
+                      <h3 className="text-md font-bold text-gray-900 mb-2">Vehicle History</h3>
+                      <p className="text-sm text-gray-600 italic border-l-4 border-accent pl-3 py-1 bg-gray-50 rounded-r-md">
+                        "{selectedEvent.history}"
+                      </p>
+                    </div>
+
+                    <div className="border-t border-gray-200 pt-6">
+                      <div className="flex justify-between items-center mb-6 bg-gray-50 p-4 rounded-lg">
+                        <span className="text-base font-medium text-gray-900">Total Price / Day</span>
+                        <span className="text-xl font-bold text-accent">IDR {selectedEvent.price.toLocaleString('id-ID')}</span>
+                      </div>
                       <button className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-accent hover:bg-opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-accent transition duration-150 ease-in-out">
-                        Confirm Payment
+                        Proceed to Booking
                       </button>
                     </div>
                   </div>

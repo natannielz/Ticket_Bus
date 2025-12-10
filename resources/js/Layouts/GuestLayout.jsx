@@ -1,7 +1,10 @@
 import React from 'react';
 import { Link } from '@inertiajs/react';
 
+import { usePage } from '@inertiajs/react';
+
 export default function GuestLayout({ children }) {
+  const { auth } = usePage().props;
   return (
     <div className="min-h-screen bg-primary font-sans text-text-main flex flex-col">
       <nav className="bg-primary border-b border-gray-100 shadow-sm">
@@ -23,12 +26,39 @@ export default function GuestLayout({ children }) {
               </div>
             </div>
             <div className="hidden sm:flex sm:items-center sm:ml-6 space-x-4">
-              <Link href="/login" className="text-sm font-medium text-gray-500 hover:text-gray-900">
-                Log in
-              </Link>
-              <Link href="/register" className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-accent hover:bg-opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                Register
-              </Link>
+              {auth.user ? (
+                <>
+                  {auth.user.role === 'admin' ? (
+                    <Link href={route('admin.dashboard')} className="text-sm font-medium text-accent hover:text-accent-blue">
+                      Admin Dashboard
+                    </Link>
+                  ) : (
+                    <Link href={route('bookings.index')} className="text-sm font-medium text-accent hover:text-accent-blue">
+                      My Bookings
+                    </Link>
+                  )}
+                  <span className="text-sm text-gray-500">
+                    Hi, {auth.user.name}
+                  </span>
+                  <Link
+                    href={route('logout')}
+                    method="post"
+                    as="button"
+                    className="text-sm font-medium text-red-500 hover:text-red-700"
+                  >
+                    Log out
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <Link href="/login" className="text-sm font-medium text-gray-500 hover:text-gray-900">
+                    Log in
+                  </Link>
+                  <Link href="/register" className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-accent hover:bg-opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    Register
+                  </Link>
+                </>
+              )}
             </div>
           </div>
         </div>
