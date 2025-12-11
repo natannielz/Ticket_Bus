@@ -10,7 +10,9 @@ class ArmadaSeeder extends Seeder
   public function run(): void
   {
     // Clear existing armadas to avoid duplicates during development
+    \Illuminate\Support\Facades\Schema::disableForeignKeyConstraints();
     Armada::truncate();
+    \Illuminate\Support\Facades\Schema::enableForeignKeyConstraints();
 
     $armadas = [
       [

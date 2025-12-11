@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package bus_system;
+
+// --- Services ---
+
+// 1. Booking Service (Unary)
+service BookingService {
+  rpc CreateBooking (BookingRequest) returns (BookingResponse);
+  rpc GetBookingStatus (BookingIdRequest) returns (BookingStatusResponse);
+}
+
+// 2. Chat Service (Bidirectional Streaming)
+service ChatService {
+  rpc JoinChat (UserIdentity) returns (stream ChatMessage); // Receive messages
+  rpc SendMessage (stream ChatMessage) returns (Ack);       // Send messages
+  rpc StreamChatUpdates (Empty) returns (stream ChatEvent); // For Admin Dashboard List
+}
+
+// 3. Seat Sync Service (Server Streaming)
+service SeatSyncService {
+  rpc WatchSeatAvailability (RouteRequest) returns (stream SeatUpdate);
+}
+
+// --- Messages ---
+
+message Empty {}
+
+message Ack {
+  bool success = 1;
+  string message = 2;
+}
+
+message UserIdentity {
+  string user_id = 1; // "admin" or valid user ID
+  string role = 2;
+}
+
+message ChatMessage {
+  string id = 1;
+  string sender_id = 2;
+  string receiver_id = 3; // "admin" or user ID
+  string content = 4;
+  string timestamp = 5;
+  bool is_admin = 6;
+}
+
+message ChatEvent {
+  string type = 1; // "new_message", "user_online"
+  ChatMessage data = 2;
+}
+
+message BookingRequest {
+  string user_id = 1;
+  string armada_id = 2;
+  string date = 3;
+  repeated string seats = 4; // ["1A", "1B"]
+  int32 total_price = 5;
+}
+
+message BookingResponse {
+  bool success = 1;
+  string booking_id = 2;
+  string error_message = 3;
+}
+
+message BookingIdRequest {
+  string booking_id = 1;
+}
+
+message BookingStatusResponse {
+  string status = 1; // "confirmed", "pending"
+  bool checked_in = 2;
+}
+
+message RouteRequest {
+  string route_id = 1;
+  string date = 2;
+}
+
+message SeatUpdate {
+  string armada_id = 1;
+  repeated string booked_seats = 2; // Full list of currently booked seats
+}

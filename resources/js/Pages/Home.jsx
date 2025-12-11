@@ -1,62 +1,98 @@
 import React, { useState, useEffect } from 'react';
-import { Head, Link, useForm, usePage } from '@inertiajs/react';
 import GuestLayout from '@/Layouts/GuestLayout';
+import { useNavigate } from 'react-router-dom';
 
-export default function Home({ events }) {
-  const { auth } = usePage().props;
+export default function Home() {
+  const navigate = useNavigate();
+  const [events, setEvents] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState(null);
-  const [isLoginModalOpen, setLoginModalOpen] = useState(false);
 
-  // Form handling for booking
-  const { data, setData, post, processing, errors, reset, wasSuccessful } = useForm({
+  // Mock auth for now
+  const auth = { user: null };
+
+  useEffect(() => {
+    fetch('/api/armadas')
+      .then(res => res.json())
+      .then(data => {
+        if (data.data) setEvents(data.data);
+      })
+      .catch(err => console.error("Failed to fetch armadas", err));
+  }, []);
+
+  const [formData, setFormData] = useState({
     armada_id: '',
     date: '',
-    seats: 1,
+    seats: 1
   });
+
+  const [processing, setProcessing] = useState(false);
+  const [errors, setErrors] = useState({});
+
+  const setData = (key, value) => {
+    setFormData(prev => ({ ...prev, [key]: value }));
+  };
 
   useEffect(() => {
     if (selectedEvent) {
-      setData('armada_id', selectedEvent.id);
+      setFormData(prev => ({ ...prev, armada_id: selectedEvent.id }));
     }
   }, [selectedEvent]);
 
   const openDrawer = (event) => {
-    if (!auth.user) {
-      // Redirect to login or show modal hinting to login
-      // For now, let's just alert or simple redirect
+    const token = localStorage.getItem('token');
+    if (!token) {
       if (confirm("You must be logged in to book. Go to Login?")) {
-        window.location.href = route('login');
+        navigate('/login');
       }
       return;
     }
     setSelectedEvent(event);
-    setData('armada_id', event.id);
+    setFormData(prev => ({ ...prev, armada_id: event.id }));
   };
 
   const closeDrawer = () => {
     setSelectedEvent(null);
-    reset();
+    setFormData({ armada_id: '', date: '', seats: 1 });
   };
 
-  const submitBooking = (e) => {
+  const submitBooking = async (e) => {
     e.preventDefault();
-    post(route('bookings.store'), {
-      onSuccess: () => {
+    setProcessing(true);
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/bookings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          ...formData,
+          total_price: selectedEvent.price_per_km * formData.seats
+        })
+      });
+
+      if (res.ok) {
+        alert("Booking Successful!");
         closeDrawer();
-        // Success toast is handled by Layout/Flash
-        alert("Booking Successful!"); // Temporary immediate feedback
-      },
-    });
+      } else {
+        const err = await res.json();
+        alert("Booking failed: " + err.message);
+      }
+    } catch (error) {
+      console.error(error);
+      alert("An error occurred");
+    } finally {
+      setProcessing(false);
+    }
   };
 
   // Calculate total price dynamically
-  const totalPrice = selectedEvent ? (selectedEvent.price_per_km * data.seats) : 0;
+  const totalPrice = selectedEvent ? (selectedEvent.price_per_km * formData.seats) : 0;
 
   return (
     <GuestLayout>
-      <Head title="Home" />
-
-      {/* --- HERO SECTION --- */}
       <div className="relative bg-white overflow-hidden mb-12">
         <div className="max-w-7xl mx-auto">
           <div className="relative z-10 pb-8 bg-white sm:pb-16 md:pb-20 lg:max-w-2xl lg:w-full lg:pb-28 xl:pb-32">
@@ -107,8 +143,8 @@ export default function Home({ events }) {
                   <div className="absolute inset-0 bg-black/10 group-hover:bg-transparent transition-colors z-10" />
                   <img
                     className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
-                    src={`https://images.unsplash.com/photo-${1500000000000 + event.id}?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80`}
-                    onError={(e) => e.target.src = "https://images.unsplash.com/photo-1570125909232-eb263c188f7e?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80"}
+                    src={event.image_path ? `/images/armadas/${event.image_path}` : `https://images.unsplash.com/photo-${1500000000000 + event.id}?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80`}
+                    onError={(e) => e.target.src = "https://via.placeholder.com/800x600?text=No+Image"}
                     alt={event.name}
                   />
                 </div>
@@ -177,7 +213,7 @@ export default function Home({ events }) {
                           type="date"
                           required
                           className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-accent focus:border-accent sm:text-sm"
-                          value={data.date}
+                          value={formData.date}
                           onChange={e => setData('date', e.target.value)}
                         />
                         {errors.date && <p className="text-red-500 text-xs mt-1">{errors.date}</p>}
@@ -191,7 +227,7 @@ export default function Home({ events }) {
                           max={selectedEvent.capacity}
                           required
                           className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-accent focus:border-accent sm:text-sm"
-                          value={data.seats}
+                          value={formData.seats}
                           onChange={e => setData('seats', e.target.value)}
                         />
                         {errors.seats && <p className="text-red-500 text-xs mt-1">{errors.seats}</p>}
