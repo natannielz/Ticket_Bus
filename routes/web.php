@@ -51,6 +51,10 @@ Route::middleware('auth')->group(function () {
         Route::get('/dashboard', [TransactionController::class, 'index'])->name('dashboard');
         Route::get('/report', [TransactionController::class, 'report'])->name('report');
 
+        Route::get('/operations', function () {
+            return Inertia::render('Admin/OperationsCenter');
+        })->name('operations');
+
         Route::get('/armadas', [ArmadaController::class, 'index'])->name('armadas.index');
         Route::get('/armadas/create', [ArmadaController::class, 'create'])->name('armadas.create');
         Route::post('/armadas', [ArmadaController::class, 'store'])->name('armadas.store');

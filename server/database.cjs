@@ -193,6 +193,12 @@ function initDb() {
       if (!columnNames.includes('conductor_id')) {
         db.run("ALTER TABLE schedules ADD COLUMN conductor_id INTEGER REFERENCES crews(id)");
       }
+      if (!columnNames.includes('is_live')) {
+        db.run("ALTER TABLE schedules ADD COLUMN is_live INTEGER DEFAULT 1");
+      }
+      if (!columnNames.includes('needs_reassignment')) {
+        db.run("ALTER TABLE schedules ADD COLUMN needs_reassignment INTEGER DEFAULT 0");
+      }
     });
   });
 }

@@ -310,6 +310,99 @@ app.get('/api/admin/users', authenticateToken, (req, res) => {
   });
 });
 
+// Operations Command Center: Master Data
+app.get('/api/admin/operations/master-data', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.sendStatus(403);
+
+  const data = {};
+
+  db.serialize(() => {
+    // 1. Armadas
+    db.all("SELECT * FROM armadas", (err, rows) => {
+      data.armadas = rows || [];
+
+      // 2. Crews
+      db.all(`SELECT crews.*, armadas.name as bus_name 
+              FROM crews 
+              LEFT JOIN armadas ON crews.assigned_bus_id = armadas.id`, (err, rows) => {
+        data.crews = rows || [];
+
+        // 3. Routes
+        db.all("SELECT * FROM routes", (err, rows) => {
+          data.routes = rows || [];
+
+          // 4. Schedules
+          const scheduleQuery = `
+            SELECT schedules.*, 
+                   routes.name as route_name, 
+                   armadas.name as armada_name,
+                   d.name as driver_name,
+                   c.name as conductor_name
+            FROM schedules
+            LEFT JOIN routes ON schedules.route_id = routes.id
+            LEFT JOIN armadas ON schedules.armada_id = armadas.id
+            LEFT JOIN crews d ON schedules.driver_id = d.id
+            LEFT JOIN crews c ON schedules.conductor_id = c.id
+          `;
+          db.all(scheduleQuery, (err, rows) => {
+            data.schedules = rows || [];
+            res.json({ data: data });
+          });
+        });
+      });
+    });
+  });
+});
+
+// Admin: Update Armada Status (with Integrity Check)
+app.put('/api/admin/armadas/:id/status', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.sendStatus(403);
+  const { status } = req.body;
+  const armadaId = req.params.id;
+
+  db.serialize(() => {
+    db.run("BEGIN TRANSACTION");
+
+    // Update Armada Status
+    db.run("UPDATE armadas SET status = ? WHERE id = ?", [status, armadaId], function (err) {
+      if (err) {
+        db.run("ROLLBACK");
+        return res.status(500).json({ error: err.message });
+      }
+
+      // Integrity Check: If maintenance, flag schedules
+      if (status === 'maintenance') {
+        db.run("UPDATE schedules SET needs_reassignment = 1 WHERE armada_id = ?", [armadaId], (err) => {
+          if (err) {
+            db.run("ROLLBACK");
+            return res.status(500).json({ error: err.message });
+          }
+          db.run("COMMIT");
+          res.json({ message: "Armada updated and schedules flagged" });
+        });
+      } else {
+        db.run("COMMIT");
+        res.json({ message: "Armada status updated" });
+      }
+    });
+  });
+});
+
+// Admin: Toggle Schedule Live Status
+app.put('/api/admin/schedules/:id/toggle-live', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.sendStatus(403);
+  const scheduleId = req.params.id;
+
+  db.get("SELECT is_live FROM schedules WHERE id = ?", [scheduleId], (err, row) => {
+    if (err || !row) return res.status(404).json({ error: "Schedule not found" });
+    const newStatus = row.is_live === 1 ? 0 : 1;
+    db.run("UPDATE schedules SET is_live = ? WHERE id = ?", [newStatus, scheduleId], (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ message: "Schedule status toggled", is_live: newStatus });
+    });
+  });
+});
+
 // ... (User, Armada, Booking APIs)
 
 // Routes APIs
@@ -408,7 +501,7 @@ app.get('/api/schedules', (req, res) => {
         FROM schedules s
         JOIN routes r ON s.route_id = r.id
         JOIN armadas a ON s.armada_id = a.id
-        WHERE 1=1 
+        WHERE 1=1 AND s.is_live = 1 
         ${from ? "AND r.origin LIKE ?" : ""}
         ${to ? "AND r.destination LIKE ?" : ""}
     `;

@@ -17,18 +17,22 @@ export default function Catalog() {
   const [errors, setErrors] = useState({});
 
   useEffect(() => {
-    fetch('/api/armadas')
+    fetch('/api/schedules')
       .then(res => res.json())
-      .then(data => {
-        if (data.data) {
-          const transformed = data.data.map(d => ({
+      .then(result => {
+        if (result.data) {
+          const transformed = result.data.map(d => ({
             ...d,
-            id: d.id,
-            title: d.name,
-            level: d.level,
-            price: d.price_per_km,
-            image: d.image_path ? `/images/armadas/${d.image_path}` : 'https://via.placeholder.com/800x600?text=No+Image',
-            date: 'Tersedia Setiap Hari'
+            id: d.armada_id, // Keep for legacy booking logic compatibility
+            schedule_id: d.id,
+            title: d.armada_name,
+            level: d.armada_level,
+            price: d.price,
+            image: d.armada_image ? `/images/armadas/${d.armada_image}` : 'https://via.placeholder.com/800x600?text=No+Image',
+            route: d.route_name,
+            date: `Keberangkatan: ${d.departure_time}`,
+            seat_config: d.seat_config,
+            capacity: d.capacity
           }));
           setEvents(transformed);
         }
