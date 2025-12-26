@@ -25,8 +25,8 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // Initialize gRPC Server
-const grpcServer = require('./grpc_server.cjs');
-grpcServer.startServer();
+const { startServer, eventBus } = require('./grpc_server.cjs');
+startServer();
 
 // Initialize gRPC Client
 const grpc = require('@grpc/grpc-js');
@@ -78,6 +78,43 @@ const authenticateToken = (req, res, next) => {
 
 
 
+// Global gRPC -> Socket.io Bridge
+// This handles messages coming from gRPC clients and pushes them to Socket.io clients
+eventBus.on('chat_event', (event) => {
+  if (event.type === 'new_message' && event.message) {
+    const msg = event.message;
+    const fullMsg = {
+      ...msg,
+      isAdmin: !!msg.is_admin
+    };
+
+    console.log(`[Global Bridge] Forwarding gRPC msg to Socket.io: ${msg.sender_id} -> ${msg.receiver_id}`);
+
+    // Route to recipient
+    if (msg.receiver_id === 'admin') {
+      io.to('admin_room').emit('receive_message', fullMsg);
+    } else {
+      io.to(String(msg.receiver_id)).emit('receive_message', fullMsg);
+    }
+
+    // Always notify admin room for dashboard updates
+    if (msg.receiver_id !== 'admin') {
+      io.to('admin_room').emit('receive_message', fullMsg);
+    }
+
+    // Echo to sender's socket if they are connected via Socket.io
+    io.to(String(msg.sender_id)).emit('receive_message', fullMsg);
+  } else if (event.type === 'typing') {
+    // Broadcast typing indicators if needed
+    const { user_id, receiver_id } = event.typing;
+    if (receiver_id === 'admin') {
+      io.to('admin_room').emit('typing', event.typing);
+    } else {
+      io.to(String(receiver_id)).emit('typing', event.typing);
+    }
+  }
+});
+
 // Socket.io Real-Time Chat
 io.on('connection', (socket) => {
   console.log('User connected to Socket.io:', socket.id);
@@ -91,56 +128,8 @@ io.on('connection', (socket) => {
       }
       console.log(`[Socket.IO] ${uId} (${role}) joined rooms: ${uId}${role === 'admin' ? ', admin_room' : ''}`);
 
-      // --- gRPC Bridge Start ---
-      // Open a persistent stream to gRPC server to represent this user
-      // so gRPC server knows they are online and can push messages to them.
-      const metadata = new grpc.Metadata();
-      metadata.add('role', role);
-
-      const joinStream = chatClient.JoinChat({ user_id: uId, role: role }, metadata);
-
-      // Store stream on socket to close it later
-      socket.grpcStream = joinStream;
-
-      joinStream.on('data', (event) => {
-        // event is ChatEvent { type, payload: ... }
-        // We received a push from gRPC (e.g. new message from Admin)
-        console.log(`[gRPC Bridge] Received push for ${uId}:`, event.type);
-
-        let shouldEmit = true;
-
-        // Transform or Forward based on type
-        // The frontend expects specific events: 'receive_message', 'typing', 'read'
-
-        if (event.type === 'new_message' && event.message) {
-          const msg = event.message;
-          // Ensure format matches what frontend expects
-          const fullMsg = {
-            ...msg,
-            isAdmin: !!msg.is_admin
-          };
-          socket.emit('receive_message', fullMsg);
-        }
-        else if (event.type === 'typing' && event.typing) {
-          socket.emit('typing', event.typing);
-        }
-        else if (event.type === 'read' && event.read) {
-          socket.emit('read', event.read);
-        }
-        else if (event.type === 'user_online') {
-          // Optional: Notify frontend if needed, or just log
-        }
-      });
-
-      joinStream.on('error', (err) => {
-        console.error(`[gRPC Bridge] JoinChat Stream Error for ${uId}:`, err.message);
-      });
-
-      joinStream.on('end', () => {
-        console.log(`[gRPC Bridge] JoinChat Stream Ended for ${uId}`);
-      });
-      // --- gRPC Bridge End ---
-
+      // REMOVED: Redundant per-socket gRPC Bridge.
+      // The global eventBus listener now handles gRPC -> Socket.io communication.
     } catch (e) {
       console.error("Socket Join Error:", e);
     }
@@ -149,74 +138,53 @@ io.on('connection', (socket) => {
   socket.on('send_message', (msg) => {
     // msg: { sender_id, sender_name, receiver_id, content, is_admin }
     const { sender_id, sender_name, receiver_id, content, is_admin } = msg;
-
-    // Use gRPC ChatService to send message (it handles DB persistence + routing)
-    const chatStream = chatClient.SendMessage();
-
-    chatStream.on('data', (ack) => {
-      console.log('[gRPC Bridge] Message ACK:', ack.success ? 'OK' : ack.message);
-    });
-
-    chatStream.on('error', (err) => {
-      console.error('[gRPC Bridge] Stream Error:', err.message);
-      // Fallback: emit directly via Socket.IO
-      const fullMsg = {
-        id: Date.now(),
-        ...msg,
-        created_at: new Date().toISOString()
-      };
-      if (receiver_id === 'admin') {
-        io.to('admin_room').emit('receive_message', fullMsg);
-      } else {
-        io.to(String(receiver_id)).emit('receive_message', fullMsg);
-        io.to('admin_room').emit('receive_message', fullMsg);
-      }
-    });
-
-    chatStream.write({
-      message: {
-        sender_id: String(sender_id),
-        sender_name: sender_name || 'User',
-        receiver_id: String(receiver_id),
-        content,
-        is_admin: !!is_admin
-      }
-    });
-
-    chatStream.end();
-
-    // RESTORED: Emit to Socket.IO clients (Primary Real-time transport)
     const safeIsAdmin = is_admin === true || is_admin === 'true' || is_admin === 1;
 
-    const fullMsg = {
-      id: Date.now(),
-      sender_id: String(sender_id),
-      sender_name: sender_name || 'User',
-      receiver_id: String(receiver_id),
-      content: content,
-      is_admin: safeIsAdmin,
-      created_at: new Date().toISOString()
-    };
+    // Persist to DB
+    const timestamp = new Date().toISOString();
+    db.run(
+      `INSERT INTO chat_messages (sender_id, sender_name, receiver_id, content, is_admin, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      [String(sender_id), sender_name || 'User', String(receiver_id), content, safeIsAdmin ? 1 : 0, timestamp],
+      function (err) {
+        if (err) {
+          console.error('[Socket.IO] DB Insert Error:', err);
+        } else {
+          // Emit to eventBus so gRPC listeners (like StreamChatUpdates) know about it
+          const messageId = this.lastID;
+          const fullMsg = {
+            id: messageId,
+            sender_id: String(sender_id),
+            sender_name: sender_name || 'User',
+            receiver_id: String(receiver_id),
+            content,
+            is_admin: safeIsAdmin,
+            timestamp,
+            created_at: timestamp
+          };
 
-    try {
-      // Send to recipient
-      if (receiver_id === 'admin') {
-        io.to('admin_room').emit('receive_message', fullMsg);
-      } else {
-        io.to(String(receiver_id)).emit('receive_message', fullMsg);
+          eventBus.emit('chat_event', { type: 'new_message', message: fullMsg });
+
+          // Broadcast to Socket.IO clients
+          try {
+            if (receiver_id === 'admin') {
+              io.to('admin_room').emit('receive_message', { ...fullMsg, isAdmin: safeIsAdmin });
+            } else {
+              io.to(String(receiver_id)).emit('receive_message', { ...fullMsg, isAdmin: safeIsAdmin });
+            }
+
+            if (receiver_id !== 'admin') {
+              io.to('admin_room').emit('receive_message', { ...fullMsg, isAdmin: safeIsAdmin });
+            }
+
+            // Echo to sender
+            io.to(String(sender_id)).emit('receive_message', { ...fullMsg, isAdmin: safeIsAdmin });
+          } catch (e) {
+            console.error("Socket Emit Error:", e);
+          }
+        }
       }
-
-      // Send to admin_room regardless (for dashboard updates)
-      if (receiver_id !== 'admin') {
-        io.to('admin_room').emit('receive_message', fullMsg);
-      }
-
-      // Echo to sender (for confirmation/multi-device)
-      io.to(String(sender_id)).emit('receive_message', fullMsg);
-
-    } catch (e) {
-      console.error("Socket Emit Error:", e);
-    }
+    );
   });
 
   // Handle Typing Indicator

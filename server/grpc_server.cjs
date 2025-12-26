@@ -144,14 +144,19 @@ const sendMessage = (call) => {
            VALUES (?, ?, ?, ?, ?, ?)`,
         [msg.sender_id, msg.sender_name || 'User', msg.receiver_id, msg.content, msg.is_admin ? 1 : 0, timestamp],
         function (err) {
-          if (err) console.error('[gRPC Chat] DB Insert Error:', err);
+          if (err) {
+            console.error('[gRPC Chat] DB Insert Error:', err);
+          } else {
+            // Emit for unified bridge AFTER DB persistence
+            eventBus.emit('chat_event', {
+              type: 'new_message',
+              message: { ...fullMsg, id: this.lastID }
+            });
+          }
         }
       );
 
-      // Emit for dashboard
-      eventBus.emit('chat_event', { type: 'new_message', message: fullMsg });
-
-      // Route to recipient
+      // Route to active gRPC streams
       const targetStreams = msg.receiver_id === 'admin' ? adminStreams : [userStreams.get(msg.receiver_id)].filter(Boolean);
       targetStreams.forEach(s => {
         if (s && s.sendEvent) s.sendEvent('new_message', { message: fullMsg });
@@ -233,4 +238,4 @@ const startServer = () => {
   });
 };
 
-module.exports = { startServer };
+module.exports = { startServer, eventBus };
