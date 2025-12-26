@@ -7,11 +7,22 @@ const path = require('path');
 const db = require('./database.cjs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
+app.use(bodyParser.json());
 const httpServer = createServer(app);
+
+// Prevent crash on unhandled errors
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+  // Keep running? For dev, yes.
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('UNHANDLED REJECTION:', reason);
+});
 
 // Initialize gRPC Server
 const grpcServer = require('./grpc_server.cjs');
@@ -26,6 +37,7 @@ const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
 });
 const busProto = grpc.loadPackageDefinition(packageDefinition).bus_system;
 const bookingClient = new busProto.BookingService('localhost:50051', grpc.credentials.createInsecure());
+const chatClient = new busProto.ChatService('localhost:50051', grpc.credentials.createInsecure());
 
 const io = new Server(httpServer, {
   cors: {
@@ -33,7 +45,7 @@ const io = new Server(httpServer, {
     methods: ["GET", "POST"]
   }
 });
-const PORT = process.env.PORT || 3000;
+const PORT = 3005; // Hardcoded for dev reliability in this environment
 const SECRET_KEY = "supersecretkey_dev_only"; // Hardcoded for dev reliability in this environment
 
 const authenticateToken = (req, res, next) => {
@@ -43,8 +55,24 @@ const authenticateToken = (req, res, next) => {
 
   jwt.verify(token, SECRET_KEY, (err, user) => {
     if (err) return res.status(403).json({ error: "Forbidden: Invalid Token" });
-    req.user = user;
-    next();
+
+    // FETCH FRESH ROLE FROM DB
+    // console.log("Verifying fresh role for user:", user.id);
+    db.get("SELECT role FROM users WHERE id = ?", [user.id], (dbErr, row) => {
+      // console.log("DB Role Fetch Result:", dbErr, row);
+      if (dbErr) {
+        console.error("Auth DB Error:", dbErr);
+        return res.status(500).json({ error: "Auth DB Error" });
+      }
+      if (!row) {
+        console.error("User not found in DB during auth:", user.id);
+        return res.status(403).json({ error: "Forbidden: User not found" });
+      }
+
+      // Update user object with fresh role
+      req.user = { ...user, role: row.role };
+      next();
+    });
   });
 };
 
@@ -55,41 +83,203 @@ io.on('connection', (socket) => {
   console.log('User connected to Socket.io:', socket.id);
 
   socket.on('join', ({ userId, role }) => {
-    socket.join(role === 'admin' ? 'admin_room' : userId);
-    console.log(`User ${userId} (${role}) joined chat`);
+    try {
+      const uId = String(userId);
+      socket.join(uId);
+      if (role === 'admin') {
+        socket.join('admin_room');
+      }
+      console.log(`[Socket.IO] ${uId} (${role}) joined rooms: ${uId}${role === 'admin' ? ', admin_room' : ''}`);
+
+      // --- gRPC Bridge Start ---
+      // Open a persistent stream to gRPC server to represent this user
+      // so gRPC server knows they are online and can push messages to them.
+      const metadata = new grpc.Metadata();
+      metadata.add('role', role);
+
+      const joinStream = chatClient.JoinChat({ user_id: uId, role: role }, metadata);
+
+      // Store stream on socket to close it later
+      socket.grpcStream = joinStream;
+
+      joinStream.on('data', (event) => {
+        // event is ChatEvent { type, payload: ... }
+        // We received a push from gRPC (e.g. new message from Admin)
+        console.log(`[gRPC Bridge] Received push for ${uId}:`, event.type);
+
+        let shouldEmit = true;
+
+        // Transform or Forward based on type
+        // The frontend expects specific events: 'receive_message', 'typing', 'read'
+
+        if (event.type === 'new_message' && event.message) {
+          const msg = event.message;
+          // Ensure format matches what frontend expects
+          const fullMsg = {
+            ...msg,
+            isAdmin: !!msg.is_admin
+          };
+          socket.emit('receive_message', fullMsg);
+        }
+        else if (event.type === 'typing' && event.typing) {
+          socket.emit('typing', event.typing);
+        }
+        else if (event.type === 'read' && event.read) {
+          socket.emit('read', event.read);
+        }
+        else if (event.type === 'user_online') {
+          // Optional: Notify frontend if needed, or just log
+        }
+      });
+
+      joinStream.on('error', (err) => {
+        console.error(`[gRPC Bridge] JoinChat Stream Error for ${uId}:`, err.message);
+      });
+
+      joinStream.on('end', () => {
+        console.log(`[gRPC Bridge] JoinChat Stream Ended for ${uId}`);
+      });
+      // --- gRPC Bridge End ---
+
+    } catch (e) {
+      console.error("Socket Join Error:", e);
+    }
   });
 
   socket.on('send_message', (msg) => {
     // msg: { sender_id, sender_name, receiver_id, content, is_admin }
     const { sender_id, sender_name, receiver_id, content, is_admin } = msg;
 
-    // Persist to DB
-    db.run("INSERT INTO chat_messages (sender_id, sender_name, receiver_id, content, is_admin) VALUES (?, ?, ?, ?, ?)",
-      [sender_id, sender_name, receiver_id, content, is_admin ? 1 : 0],
-      function (err) {
-        if (err) return console.error("Chat storage error:", err);
+    // Use gRPC ChatService to send message (it handles DB persistence + routing)
+    const chatStream = chatClient.SendMessage();
 
-        const fullMsg = {
-          id: this.lastID,
-          ...msg,
-          created_at: new Date().toISOString()
-        };
+    chatStream.on('data', (ack) => {
+      console.log('[gRPC Bridge] Message ACK:', ack.success ? 'OK' : ack.message);
+    });
 
-        // If from User to Admin
-        if (receiver_id === 'admin') {
-          io.to('admin_room').emit('receive_message', fullMsg);
-        } else {
-          // If from Admin to User
-          io.to(receiver_id).emit('receive_message', fullMsg);
-          // Also echo to all admins so they see the reply in their UI
-          io.to('admin_room').emit('receive_message', fullMsg);
-        }
+    chatStream.on('error', (err) => {
+      console.error('[gRPC Bridge] Stream Error:', err.message);
+      // Fallback: emit directly via Socket.IO
+      const fullMsg = {
+        id: Date.now(),
+        ...msg,
+        created_at: new Date().toISOString()
+      };
+      if (receiver_id === 'admin') {
+        io.to('admin_room').emit('receive_message', fullMsg);
+      } else {
+        io.to(String(receiver_id)).emit('receive_message', fullMsg);
+        io.to('admin_room').emit('receive_message', fullMsg);
       }
-    );
+    });
+
+    chatStream.write({
+      message: {
+        sender_id: String(sender_id),
+        sender_name: sender_name || 'User',
+        receiver_id: String(receiver_id),
+        content,
+        is_admin: !!is_admin
+      }
+    });
+
+    chatStream.end();
+
+    // RESTORED: Emit to Socket.IO clients (Primary Real-time transport)
+    const safeIsAdmin = is_admin === true || is_admin === 'true' || is_admin === 1;
+
+    const fullMsg = {
+      id: Date.now(),
+      sender_id: String(sender_id),
+      sender_name: sender_name || 'User',
+      receiver_id: String(receiver_id),
+      content: content,
+      is_admin: safeIsAdmin,
+      created_at: new Date().toISOString()
+    };
+
+    try {
+      // Send to recipient
+      if (receiver_id === 'admin') {
+        io.to('admin_room').emit('receive_message', fullMsg);
+      } else {
+        io.to(String(receiver_id)).emit('receive_message', fullMsg);
+      }
+
+      // Send to admin_room regardless (for dashboard updates)
+      if (receiver_id !== 'admin') {
+        io.to('admin_room').emit('receive_message', fullMsg);
+      }
+
+      // Echo to sender (for confirmation/multi-device)
+      io.to(String(sender_id)).emit('receive_message', fullMsg);
+
+    } catch (e) {
+      console.error("Socket Emit Error:", e);
+    }
+  });
+
+  // Handle Typing Indicator
+  socket.on('typing', (data) => {
+    // data: { user_id, user_name, is_typing, receiver_id, role }
+    const { user_id, user_name, is_typing, receiver_id, role } = data;
+
+    // 1. Send to gRPC (for Admin Dashboard)
+    const chatStream = chatClient.SendMessage();
+    chatStream.write({
+      typing: {
+        user_id: String(user_id),
+        user_name: user_name,
+        is_typing: !!is_typing
+      }
+    });
+    chatStream.end();
+
+    // 2. Emit to Socket.IO Recipient
+    if (receiver_id === 'admin') {
+      io.to('admin_room').emit('typing', data);
+    } else {
+      io.to(String(receiver_id)).emit('typing', data);
+    }
+  });
+
+  // Handle Read Receipt
+  socket.on('read', (data) => {
+    // data: { message_id, reader_id, receiver_id }
+    const { message_id, reader_id, receiver_id } = data;
+    const timestamp = new Date().toISOString();
+
+    // 1. Send to gRPC
+    const chatStream = chatClient.SendMessage();
+    chatStream.write({
+      read: {
+        message_id: String(message_id),
+        reader_id: String(reader_id),
+        timestamp
+      }
+    });
+    chatStream.end();
+
+    // 2. Emit to Socket.IO Recipient
+    if (receiver_id === 'admin') {
+      io.to('admin_room').emit('read', { ...data, timestamp });
+    } else {
+      io.to(String(receiver_id)).emit('read', { ...data, timestamp });
+    }
+  });
+
+  socket.on('broadcast_delay', (data) => {
+    // data: { schedule_id, route_name, delay_mins, reason }
+    console.log(`BROADCAST: Delay on ${data.route_name} - ${data.delay_mins}m`);
+    io.emit('delay_alert', data); // Broadcast to all connected clients (users & admins)
   });
 
   socket.on('disconnect', () => {
     console.log('User disconnected from Socket.io');
+    if (socket.grpcStream) {
+      socket.grpcStream.cancel(); // or .end()
+      socket.grpcStream = null;
+    }
   });
 });
 
@@ -137,11 +327,16 @@ app.get('/api/armadas', (req, res) => {
 // Login
 app.post('/api/login', (req, res) => {
   const { email, password } = req.body;
+  console.log(`Login Attempt: email=${email}`);
   db.get("SELECT * FROM users WHERE email = ?", [email], (err, user) => {
     if (err || !user) {
+      console.log('Login failed: User not found or DB error');
       return res.status(401).json({ message: "Invalid credentials" });
     }
-    if (bcrypt.compareSync(password, user.password)) {
+    const valid = bcrypt.compareSync(password, user.password);
+    console.log(`User found: ${user.email}, Role: ${user.role}, Password Valid: ${valid}`);
+
+    if (valid) {
       const token = jwt.sign({ id: user.id, name: user.name, role: user.role }, SECRET_KEY, { expiresIn: '1h' });
       res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
     } else {
@@ -151,6 +346,20 @@ app.post('/api/login', (req, res) => {
 });
 
 // Register
+// Update User Profile
+app.put('/api/users/me', authenticateToken, (req, res) => {
+  const { name, email } = req.body;
+  if (!name) return res.status(400).json({ error: "Name required" });
+
+  db.run("UPDATE users SET name = ? WHERE id = ?", [name, req.user.id], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+
+    db.get("SELECT id, name, email, role FROM users WHERE id = ?", [req.user.id], (err, row) => {
+      res.json({ message: "Profile updated", user: row });
+    });
+  });
+});
+
 app.post('/api/register', (req, res) => {
   const { name, email, password } = req.body;
   const hashedPassword = bcrypt.hashSync(password, 8);
@@ -164,36 +373,44 @@ app.post('/api/register', (req, res) => {
   });
 });
 
-// Bookings (Protected)
-
-
+// Bookings (Protected - Users Only)
 app.post('/api/bookings', authenticateToken, (req, res) => {
-  const { schedule_id, date, seats, passenger_name } = req.body;
+  // Role-based access control: Admins cannot book
+  if (req.user.role === 'admin') {
+    return res.status(403).json({ error: "Admins cannot create bookings. Please use a user account." });
+  }
+
+  const { schedule_id, date, seats, passenger_name } = req.body; // seats can be a number or array
 
   if (!schedule_id) return res.status(400).json({ error: "schedule_id required" });
 
+  const seatCount = Array.isArray(seats) ? seats.length : parseInt(seats);
+  const seatList = Array.isArray(seats) ? seats : Array.from({ length: seatCount }, (_, i) => `Auto-${i + 1}`);
+
   // 1. First validate capacity via Express/DB (Quick check)
   db.get(`
-    SELECT s.*, a.capacity, (SELECT SUM(seats) FROM bookings WHERE schedule_id = s.id AND date = ?) as booked_seats
+    SELECT s.*, a.capacity, (SELECT SUM(seats) FROM bookings WHERE schedule_id = s.id AND date = ? AND status != 'cancelled') as booked_count
     FROM schedules s
     JOIN armadas a ON s.armada_id = a.id
     WHERE s.id = ?
   `, [date, schedule_id], (err, schedule) => {
     if (err || !schedule) return res.status(404).json({ error: "Schedule not found" });
 
-    const availableSeats = schedule.capacity - (schedule.booked_seats || 0);
-    if (seats > availableSeats) {
+    const availableSeats = schedule.capacity - (schedule.booked_count || 0);
+    if (seatCount > availableSeats) {
       return res.status(400).json({ error: "Not enough capacity", available: availableSeats });
     }
 
-    const totalPrice = schedule.price * seats;
+    const bookingCode = crypto.randomUUID();
+    const totalPrice = (schedule.price || 0) * seatCount;
 
     // 2. Offload creation to gRPC Service
     const request = {
       user_id: req.user.id.toString(),
       armada_id: schedule.armada_id.toString(),
+      schedule_id: schedule_id.toString(),
       date: date,
-      seats: Array.from({ length: seats }, (_, i) => `Auto-${i + 1}`), // Simplified seat selection for gRPC demo
+      seats: seatList,
       total_price: totalPrice
     };
 
@@ -202,14 +419,62 @@ app.post('/api/bookings', authenticateToken, (req, res) => {
         return res.status(500).json({ error: response?.error_message || "gRPC Service Error" });
       }
 
-      // Update our local DB with passenger name (since gRPC proto might be generic)
-      db.run("UPDATE bookings SET passenger_name = ?, schedule_id = ? WHERE id = ?",
-        [passenger_name, schedule_id, response.booking_id]);
+      // 3. Update local DB with additional metadata
+      db.run("UPDATE bookings SET passenger_name = ?, schedule_id = ?, booking_code = ? WHERE id = ?",
+        [passenger_name, schedule_id, bookingCode, response.booking_id], (err) => {
+          if (err) console.error("Metadata Update Error:", err);
 
-      res.json({
-        message: "Booking success (via gRPC Service)",
-        id: response.booking_id,
-        totalPrice
+          res.json({
+            message: "Booking success (via gRPC Service)",
+            id: response.booking_id,
+            bookingCode: bookingCode,
+            totalPrice
+          });
+        });
+    });
+  });
+});
+
+app.get('/api/bookings/:id', authenticateToken, (req, res) => {
+  const query = `
+        SELECT bookings.*, 
+               armadas.name as armada_name, armadas.level as armada_level, armadas.image_path as armada_image,
+               r.name as route_name, r.origin, r.destination,
+               s.departure_time, s.arrival_time
+        FROM bookings 
+        LEFT JOIN armadas ON bookings.armada_id = armadas.id
+        LEFT JOIN schedules s ON bookings.schedule_id = s.id
+        LEFT JOIN routes r ON s.route_id = r.id
+        WHERE bookings.id = ? AND (bookings.user_id = ? OR ? = 'admin')
+    `;
+  db.get(query, [req.params.id, req.user.id, req.user.role], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!row) return res.status(404).json({ error: "Booking not found" });
+    res.json({ data: row });
+  });
+});
+
+// User: Cancel Booking
+app.delete('/api/bookings/:id', authenticateToken, (req, res) => {
+  const bookingId = req.params.id;
+
+  db.get("SELECT schedule_id, seats, status FROM bookings WHERE id = ? AND user_id = ?", [bookingId, req.user.id], (err, booking) => {
+    if (err || !booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.status === 'cancelled') return res.status(400).json({ error: "Already cancelled" });
+
+    db.serialize(() => {
+      db.run("BEGIN TRANSACTION");
+
+      db.run("UPDATE bookings SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP WHERE id = ?", [bookingId], (err) => {
+        if (err) { db.run("ROLLBACK"); return res.status(500).json({ error: err.message }); }
+
+        db.run("UPDATE schedules SET seats_booked = MAX(0, seats_booked - ?), booked_seats = MAX(0, booked_seats - ?) WHERE id = ?",
+          [booking.seats, booking.seats, booking.schedule_id], (err) => {
+            if (err) { db.run("ROLLBACK"); return res.status(500).json({ error: err.message }); }
+
+            db.run("COMMIT");
+            res.json({ message: "Booking cancelled successfully" });
+          });
       });
     });
   });
@@ -347,6 +612,41 @@ app.get('/api/admin/dashboard', authenticateToken, (req, res) => {
     });
   });
 });
+
+// Admin: Update User Role
+app.put('/api/admin/users/:id', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
+  const { role } = req.body;
+  const userId = req.params.id;
+
+  if (!['user', 'admin'].includes(role)) {
+    return res.status(400).json({ error: "Invalid role. Must be 'user' or 'admin'" });
+  }
+
+  db.run("UPDATE users SET role = ? WHERE id = ?", [role, userId], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    if (this.changes === 0) return res.status(404).json({ error: "User not found" });
+    res.json({ message: `User role updated to ${role}` });
+  });
+});
+
+// Admin: Delete User
+app.delete('/api/admin/users/:id', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
+  const userId = req.params.id;
+
+  // Prevent admin from deleting themselves
+  if (parseInt(userId) === req.user.id) {
+    return res.status(400).json({ error: "Cannot delete your own account" });
+  }
+
+  db.run("DELETE FROM users WHERE id = ?", [userId], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    if (this.changes === 0) return res.status(404).json({ error: "User not found" });
+    res.json({ message: "User deleted successfully" });
+  });
+});
+
 // Admin: Get All Crews
 app.get('/api/admin/crews', authenticateToken, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
@@ -373,12 +673,36 @@ app.post('/api/admin/crews', authenticateToken, (req, res) => {
     });
 });
 
-// Admin: Delete Crew
+// Admin: Update Crew
+app.put('/api/admin/crews/:id', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
+  const { name, role, phone, assigned_bus_id, status } = req.body;
+  db.run("UPDATE crews SET name = ?, role = ?, phone = ?, assigned_bus_id = ?, status = ? WHERE id = ?",
+    [name, role, phone, assigned_bus_id, status || 'Active', req.params.id], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ message: "Crew updated" });
+    });
+});
+
+// Admin: Delete Crew (with Dependency Check)
 app.delete('/api/admin/crews/:id', authenticateToken, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
-  db.run("DELETE FROM crews WHERE id = ?", [req.params.id], function (err) {
+  const crewId = req.params.id;
+
+  // Check if linked to active schedules
+  db.get("SELECT id FROM schedules WHERE (driver_id = ? OR conductor_id = ?) AND is_live = 1", [crewId, crewId], (err, schedule) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ message: "Crew deleted" });
+    if (schedule) {
+      return res.status(409).json({
+        error: "Dependency Error",
+        message: "Resource is linked to an active schedule. Unpublish or reassign the schedule first."
+      });
+    }
+
+    db.run("DELETE FROM crews WHERE id = ?", [crewId], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ message: "Crew deleted" });
+    });
   });
 });
 
@@ -453,12 +777,65 @@ app.post('/api/admin/armadas', authenticateToken, (req, res) => {
     });
 });
 
-// Admin: Delete Armada
+// Admin: Update Armada
+app.put('/api/admin/armadas/:id', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
+  const { name, level, price_per_km, amenities, seat_config, history, image_path, capacity, status, license_plate } = req.body;
+  db.run(`UPDATE armadas SET name = ?, level = ?, price_per_km = ?, amenities = ?, seat_config = ?, history = ?, image_path = ?, capacity = ?, status = ?, license_plate = ? 
+          WHERE id = ?`,
+    [name, level, price_per_km, amenities, seat_config, history, image_path, capacity, status, license_plate, req.params.id],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ message: "Armada updated" });
+    });
+});
+
+// Admin: Get All Users
+app.get('/api/admin/users', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
+  db.all("SELECT id, name, email, role, created_at FROM users ORDER BY created_at DESC", (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ data: rows });
+  });
+});
+
+// Admin: Get Master Data for Operations Center
+app.get('/api/admin/operations/master-data', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
+
+  const data = {};
+  db.serialize(() => {
+    db.all("SELECT * FROM armadas", (err, rows) => { if (!err) data.armadas = rows || []; });
+    db.all("SELECT * FROM crews", (err, rows) => { if (!err) data.crews = rows || []; });
+    db.all("SELECT * FROM schedules WHERE is_live = 1", (err, rows) => { if (!err) data.schedules = rows || []; });
+    db.all("SELECT * FROM stops", (err, rows) => { if (!err) data.stops = rows || []; });
+    db.all("SELECT * FROM routes", (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      data.routes = rows || [];
+      res.json({ data });
+    });
+  });
+});
+
+// Admin: Delete Armada (with Dependency Check)
 app.delete('/api/admin/armadas/:id', authenticateToken, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
-  db.run("DELETE FROM armadas WHERE id = ?", [req.params.id], function (err) {
+  const armadaId = req.params.id;
+
+  // Check if linked to active schedules
+  db.get("SELECT id FROM schedules WHERE armada_id = ? AND is_live = 1", [armadaId], (err, schedule) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ message: "Armada deleted" });
+    if (schedule) {
+      return res.status(409).json({
+        error: "Dependency Error",
+        message: "Resource is linked to an active schedule. Unpublish or reassign the schedule first."
+      });
+    }
+
+    db.run("DELETE FROM armadas WHERE id = ?", [armadaId], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ message: "Armada deleted" });
+    });
   });
 });
 
@@ -489,25 +866,30 @@ app.get('/api/admin/operations/master-data', authenticateToken, (req, res) => {
         data.crews = rows || [];
 
         // 3. Routes
-        db.all("SELECT * FROM routes", (err, rows) => {
-          data.routes = rows || [];
+        db.all("SELECT * FROM routes", (err, routeRows) => {
+          data.routes = routeRows || [];
 
-          // 4. Schedules
-          const scheduleQuery = `
-            SELECT schedules.*, 
-                   routes.name as route_name, 
-                   armadas.name as armada_name,
-                   d.name as driver_name,
-                   c.name as conductor_name
-            FROM schedules
-            LEFT JOIN routes ON schedules.route_id = routes.id
-            LEFT JOIN armadas ON schedules.armada_id = armadas.id
-            LEFT JOIN crews d ON schedules.driver_id = d.id
-            LEFT JOIN crews c ON schedules.conductor_id = c.id
-          `;
-          db.all(scheduleQuery, (err, rows) => {
-            data.schedules = rows || [];
-            res.json({ data: data });
+          // 3b. Stops
+          db.all("SELECT * FROM stops ORDER BY route_id, stop_order", (err, stopRows) => {
+            data.stops = stopRows || [];
+
+            // 4. Schedules
+            const scheduleQuery = `
+              SELECT schedules.*, 
+                     routes.name as route_name, 
+                     armadas.name as armada_name,
+                     d.name as driver_name,
+                     c.name as conductor_name
+              FROM schedules
+              LEFT JOIN routes ON schedules.route_id = routes.id
+              LEFT JOIN armadas ON schedules.armada_id = armadas.id
+              LEFT JOIN crews d ON schedules.driver_id = d.id
+              LEFT JOIN crews c ON schedules.conductor_id = c.id
+            `;
+            db.all(scheduleQuery, (err, schedRows) => {
+              data.schedules = schedRows || [];
+              res.json({ data: data });
+            });
           });
         });
       });
@@ -710,6 +1092,24 @@ app.delete('/api/admin/schedules/:id', authenticateToken, (req, res) => {
   });
 });
 
+// Admin: Update Schedule (with optional conflict check)
+app.put('/api/admin/schedules/:id', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
+  const { days, departure_time, arrival_time, price, price_weekend, driver_id, conductor_id, armada_id } = req.body;
+  const scheduleId = req.params.id;
+
+  // Conflict detection is skipped for PUT in this simple version, but in production
+  // you'd want to check if the NEW assignments conflict with OTHER schedules.
+
+  db.run(`UPDATE schedules SET days = ?, departure_time = ?, arrival_time = ?, price = ?, price_weekend = ?, driver_id = ?, conductor_id = ?, armada_id = ? 
+          WHERE id = ?`,
+    [days, departure_time, arrival_time, price, price_weekend, driver_id, conductor_id, armada_id, scheduleId],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ message: "Schedule updated successfully" });
+    });
+});
+
 // Public: Get Schedules with Dynamic Pricing
 app.get('/api/schedules', (req, res) => {
   const { from, to, date } = req.query; // e.g. ?from=Jakarta&to=Bandung&date=2025-12-25
@@ -763,6 +1163,74 @@ app.get('/api/schedules', (req, res) => {
   });
 });
 
+// Public: Get Detailed Schedule (Mission Detail)
+app.get('/api/schedules/:id', (req, res) => {
+  const scheduleId = req.params.id;
+  const query = `
+        SELECT s.*, 
+               r.name as route_name, r.description as route_description, r.origin, r.destination, r.duration, r.coordinates, r.distanceKm,
+               a.name as armada_name, a.level as armada_level, a.amenities, a.seat_config, a.history, a.image_path as armada_image, a.capacity
+        FROM schedules s
+        JOIN routes r ON s.route_id = r.id
+        JOIN armadas a ON s.armada_id = a.id
+        WHERE s.id = ?
+    `;
+
+  db.get(query, [scheduleId], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!row) return res.status(404).json({ error: "Schedule not found" });
+
+    // Fetch stops for this route
+    db.all("SELECT * FROM stops WHERE route_id = ? ORDER BY stop_order ASC", [row.route_id], (err, stops) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      // Parse coordinates if they are stored as JSON string
+      let coordinates = [];
+      try {
+        coordinates = row.coordinates ? JSON.parse(row.coordinates) : [];
+      } catch (e) {
+        // Fallback or simple array check
+        coordinates = [];
+      }
+
+      res.json({
+        data: {
+          ...row,
+          stops: stops || [],
+          coordinates: coordinates
+        }
+      });
+    });
+  });
+});
+
+// Public: Get Booked Seats for a Schedule on a Date
+app.get('/api/schedules/:id/seats', (req, res) => {
+  const scheduleId = req.params.id;
+  const date = req.query.date || new Date().toISOString().split('T')[0];
+
+  // Fetch all bookings for this schedule and date, and extract seat_numbers
+  db.all(
+    "SELECT seat_numbers FROM bookings WHERE schedule_id = ? AND date = ? AND status != 'cancelled'",
+    [scheduleId, date],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      // Flatten all seat numbers into a single array
+      const bookedSeats = [];
+      rows.forEach(row => {
+        if (row.seat_numbers) {
+          const seats = row.seat_numbers.split(',').map(s => s.trim());
+          seats.forEach(s => { if (s) bookedSeats.push(s); });
+        }
+      });
+
+      res.json({ data: bookedSeats });
+    }
+  );
+});
+
+
 const axios = require('axios'); // Ensure axios is required
 
 // ... previous code ...
@@ -798,11 +1266,49 @@ app.post('/api/admin/calculate-route', authenticateToken, (req, res) => {
       res.json({ geometry: points, summary: summary });
     })
     .catch(error => {
-      console.error("TomTom API Error:", error.response ? error.response.data : error.message);
-      res.status(500).json({ error: "Failed to calculate route" });
+      const errorMsg = error.response ? error.response.data?.error?.message || error.response.data : error.message;
+      console.error("TomTom API Error:", errorMsg);
+      res.status(502).json({
+        error: "Routing Provider Error",
+        message: "Failed to calculate tactical path. Please verify coordinates.",
+        detail: errorMsg
+      });
     });
 });
 
+// Server Startup
 httpServer.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Command Center OS [Socket.io Active] listening on port ${PORT}`);
+}).on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.warn(`Port ${PORT} is busy, retrying in 1s...`);
+    setTimeout(() => {
+      httpServer.close();
+      httpServer.listen(PORT);
+    }, 1000);
+  } else {
+    console.error('Server Start Error:', err);
+  }
 });
+
+// Graceful Shutdown
+process.on('SIGINT', () => {
+  console.log('Shutting down server...');
+  httpServer.close(() => {
+    console.log('Server closed.');
+    db.close((err) => {
+      console.log('Database connection closed.');
+      process.exit(0);
+    });
+  });
+});
+
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received. Shutting down...');
+  httpServer.close(() => {
+    db.close(() => {
+      process.exit(0);
+    });
+  });
+});
+

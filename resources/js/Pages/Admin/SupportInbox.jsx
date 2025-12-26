@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import AdminLayout from '@/Layouts/AdminLayout';
-import { MessageCircle, Search, User, Clock, Send, CheckCircle } from 'lucide-react';
+import { MessageCircle, Search, Send, CheckCircle } from 'lucide-react';
 import { io } from 'socket.io-client';
 
 export default function SupportInbox() {
@@ -8,7 +8,15 @@ export default function SupportInbox() {
   const [chats, setChats] = useState([]);
   const [messages, setMessages] = useState([]);
   const [reply, setReply] = useState('');
+  const [typingUsers, setTypingUsers] = useState({}); // userId -> bool
   const socketRef = useRef(null);
+  const activeChatRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+
+  // Sync ref with state
+  useEffect(() => {
+    activeChatRef.current = activeChat;
+  }, [activeChat]);
 
   const user = JSON.parse(localStorage.getItem('user') || '{}');
   const token = localStorage.getItem('token');
@@ -16,7 +24,8 @@ export default function SupportInbox() {
   useEffect(() => {
     fetchConversations();
 
-    const socket = io('http://localhost:3000');
+    const SOCKET_URL = import.meta.env?.VITE_SOCKET_URL || 'http://localhost:3005';
+    const socket = io(SOCKET_URL);
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -24,15 +33,41 @@ export default function SupportInbox() {
     });
 
     socket.on('receive_message', (msg) => {
+      console.log("[Admin Inbox] Received:", msg);
       // If message is for the currently open chat, append it
       setMessages(prev => {
-        if (activeChat && (msg.sender_id === activeChat.sender_id || msg.receiver_id === activeChat.sender_id)) {
-          return [...prev, { ...msg, isMe: msg.is_admin === 1, time: new Date(msg.created_at).toLocaleTimeString() }];
+        const chat = activeChatRef.current;
+        if (chat && (msg.sender_id === chat.sender_id || msg.receiver_id === chat.sender_id)) {
+          // Prevent duplicates
+          const isMe = !!msg.is_admin; // Derived value
+          console.log(`[Admin Inbox] Processing for ${chat.id}:`, { msg_admin: msg.is_admin, isMe });
+
+          const exists = prev.some(m => m.id === msg.id || (m.content === msg.content && m.isMe === isMe));
+          if (exists && msg.id.toString().includes('temp')) return prev;
+
+          return [...prev, {
+            id: msg.id,
+            sender: msg.sender_name,
+            content: msg.content,
+            // Handle both boolean and integer
+            isMe: isMe,
+            time: new Date(msg.created_at || Date.now()).toLocaleTimeString()
+          }];
         }
         return prev;
       });
       // Refresh conversation list to show latest message/status
       fetchConversations();
+    });
+
+    socket.on('typing', (data) => {
+      // data: { user_id, is_typing ... }
+      if (data.role !== 'admin') {
+        setTypingUsers(prev => ({
+          ...prev,
+          [data.user_id]: data.is_typing
+        }));
+      }
     });
 
     return () => socket.disconnect();
@@ -66,7 +101,7 @@ export default function SupportInbox() {
         sender: m.sender_name,
         content: m.content,
         time: new Date(m.created_at).toLocaleTimeString(),
-        isMe: m.is_admin === 1
+        isMe: !!m.is_admin
       })));
     } catch (err) { console.error(err); }
   };
@@ -83,8 +118,54 @@ export default function SupportInbox() {
       is_admin: true
     };
 
+    // Optimistic Update
+    const tempId = `temp-${Date.now()}`;
+    setMessages(prev => [...prev, {
+      id: tempId,
+      sender: user.name,
+      content: reply,
+      time: new Date().toLocaleTimeString(),
+      isMe: true
+    }]);
+
     socketRef.current.emit('send_message', msgData);
     setReply('');
+
+    // Clear typing
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    socketRef.current.emit('typing', {
+      user_id: user.id,
+      user_name: user.name,
+      role: 'admin',
+      receiver_id: activeChat.sender_id,
+      is_typing: false
+    });
+  };
+
+  const handleReplyChange = (e) => {
+    const val = e.target.value;
+    setReply(val);
+
+    if (!activeChat || !socketRef.current) return;
+
+    socketRef.current.emit('typing', {
+      user_id: user.id,
+      user_name: user.name,
+      role: 'admin',
+      receiver_id: activeChat.sender_id,
+      is_typing: true
+    });
+
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      socketRef.current.emit('typing', {
+        user_id: user.id,
+        user_name: user.name,
+        role: 'admin',
+        receiver_id: activeChat.sender_id,
+        is_typing: false
+      });
+    }, 2000);
   };
 
   return (
@@ -122,7 +203,9 @@ export default function SupportInbox() {
                   </div>
                   <span className="text-[10px] text-gray-400">{chat.time}</span>
                 </div>
-                <p className={`text-xs truncate ${chat.unread ? 'font-bold text-gray-800' : 'text-gray-500'}`}>{chat.lastMsg}</p>
+                <p className={`text-xs truncate ${chat.unread ? 'font-bold text-gray-800' : 'text-gray-500'}`}>
+                  {typingUsers[chat.sender_id] ? <span className="text-green-600 animate-pulse italic">Typing...</span> : chat.lastMsg}
+                </p>
               </div>
             ))}
           </div>
@@ -165,7 +248,7 @@ export default function SupportInbox() {
                     className="flex-1 rounded-xl border-gray-200 focus:ring-black focus:border-black"
                     placeholder="Type your reply..."
                     value={reply}
-                    onChange={e => setReply(e.target.value)}
+                    onChange={handleReplyChange}
                   />
                   <button type="submit" className="p-3 bg-black text-white rounded-xl hover:bg-gray-800 transition-shadow shadow-lg hover:shadow-xl">
                     <Send size={20} />

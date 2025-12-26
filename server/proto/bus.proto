@@ -12,9 +12,19 @@ service BookingService {
 
 // 2. Chat Service (Bidirectional Streaming)
 service ChatService {
-  rpc JoinChat (UserIdentity) returns (stream ChatMessage); // Receive messages
-  rpc SendMessage (stream ChatMessage) returns (Ack);       // Send messages
+  rpc JoinChat (UserIdentity) returns (stream ChatEvent); // Unified downstream
+  rpc SendMessage (stream ChatClientMessage) returns (Ack);       // Unified upstream
   rpc StreamChatUpdates (Empty) returns (stream ChatEvent); // For Admin Dashboard List
+}
+
+// ...
+
+message ChatClientMessage {
+  oneof payload {
+      ChatMessage message = 1;
+      TypingIndicator typing = 2;
+      ReadReceipt read = 3;
+  }
 }
 
 // 3. Seat Sync Service (Server Streaming)
@@ -39,23 +49,41 @@ message UserIdentity {
 message ChatMessage {
   string id = 1;
   string sender_id = 2;
-  string receiver_id = 3; // "admin" or user ID
-  string content = 4;
-  string timestamp = 5;
-  bool is_admin = 6;
+  string sender_name = 3;
+  string receiver_id = 4; // "admin" or user ID
+  string content = 5;
+  string timestamp = 6;
+  bool is_admin = 7;
+}
+
+message TypingIndicator {
+  string user_id = 1;
+  string user_name = 2;
+  bool is_typing = 3;
+}
+
+message ReadReceipt {
+  string message_id = 1;
+  string reader_id = 2; // "admin" or user ID
+  string timestamp = 3;
 }
 
 message ChatEvent {
-  string type = 1; // "new_message", "user_online"
-  ChatMessage data = 2;
+  string type = 1; // "new_message", "user_online", "typing", "read"
+  oneof payload {
+    ChatMessage message = 2;
+    TypingIndicator typing = 3;
+    ReadReceipt read = 4;
+  }
 }
 
 message BookingRequest {
   string user_id = 1;
   string armada_id = 2;
-  string date = 3;
-  repeated string seats = 4; // ["1A", "1B"]
-  int32 total_price = 5;
+  string schedule_id = 3;
+  string date = 4;
+  repeated string seats = 5; // ["1A", "1B"]
+  int32 total_price = 6;
 }
 
 message BookingResponse {

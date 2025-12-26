@@ -206,7 +206,7 @@ export default function MapStrategyTab({ armadas, crews, schedules = [], onRefre
       color: form.color,
       origin: `${points[0].lat.toFixed(6)}, ${points[0].lng.toFixed(6)}`,
       destination: `${points[1].lat.toFixed(6)}, ${points[1].lng.toFixed(6)}`,
-      coordinates: routePath.length > 0 ? routePath : points,
+      coordinates: routePath.length > 0 ? routePath : points, // Structured array
       distanceKm: distanceKm,
       stops: stops
     };
@@ -269,6 +269,54 @@ export default function MapStrategyTab({ armadas, crews, schedules = [], onRefre
               </button>
             </div>
           </section>
+
+          {/* Stop Management Panel */}
+          {stops.length > 0 && (
+            <section className="mt-4">
+              <h3 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3">Waypoints ({stops.length})</h3>
+              <DragDropContext onDragEnd={(result) => {
+                if (!result.destination) return;
+                const reordered = Array.from(stops);
+                const [removed] = reordered.splice(result.source.index, 1);
+                reordered.splice(result.destination.index, 0, removed);
+                setStops(reordered);
+              }}>
+                <Droppable droppableId="stops-list">
+                  {(provided) => (
+                    <div {...provided.droppableProps} ref={provided.innerRef} className="space-y-2">
+                      {stops.map((stop, idx) => (
+                        <Draggable key={stop.id} draggableId={stop.id.toString()} index={idx}>
+                          {(provided, snapshot) => (
+                            <div
+                              ref={provided.innerRef}
+                              {...provided.draggableProps}
+                              {...provided.dragHandleProps}
+                              className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 transition-all ${snapshot.isDragging ? 'bg-indigo-50 border-indigo-300 shadow-lg' : 'bg-gray-50 border-gray-100'}`}
+                            >
+                              <div className="flex items-center gap-2 flex-1">
+                                <span className="w-5 h-5 rounded-full bg-blue-500 text-white text-[9px] font-black flex items-center justify-center">{idx + 1}</span>
+                                <input
+                                  type="text"
+                                  className="flex-1 text-[10px] font-bold bg-transparent border-0 p-0 focus:ring-0"
+                                  value={stop.name}
+                                  onChange={(e) => setStops(prev => prev.map(s => s.id === stop.id ? { ...s, name: e.target.value } : s))}
+                                />
+                              </div>
+                              <button onClick={() => setStops(prev => prev.filter(s => s.id !== stop.id))} className="text-gray-300 hover:text-red-500 transition-colors">
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          )}
+                        </Draggable>
+                      ))}
+                      {provided.placeholder}
+                    </div>
+                  )}
+                </Droppable>
+              </DragDropContext>
+              <p className="text-[8px] text-gray-400 mt-2 italic">Drag to reorder. Changes require recalculation.</p>
+            </section>
+          )}
 
           <hr className="border-gray-50" />
 
@@ -363,7 +411,20 @@ export default function MapStrategyTab({ armadas, crews, schedules = [], onRefre
           </section>
 
           <div className="pt-4">
-            <button onClick={handleSubmit} className="w-full py-4 bg-gradient-to-r from-gray-900 to-black text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2">
+            {(armadaConflict || driverConflict || conductorConflict) && (
+              <div className="mb-3 p-3 rounded-xl bg-red-50 border border-red-200 text-center">
+                <p className="text-[10px] font-black text-red-700 uppercase tracking-widest">⚠ Deployment Blocked</p>
+                <p className="text-[9px] text-red-600 mt-1">Resolve resource conflicts before deploying.</p>
+              </div>
+            )}
+            <button
+              onClick={handleSubmit}
+              disabled={armadaConflict || driverConflict || conductorConflict || points.length < 2}
+              className={`w-full py-4 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl flex items-center justify-center gap-2 transition-all
+                ${(armadaConflict || driverConflict || conductorConflict || points.length < 2)
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-gray-900 to-black text-white hover:scale-[1.02] active:scale-95'}`}
+            >
               <Save size={16} /> Deploy Strategy
             </button>
           </div>

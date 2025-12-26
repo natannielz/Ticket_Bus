@@ -4,7 +4,12 @@ import FleetTab from '@/Components/Admin/FleetTab';
 import CrewTab from '@/Components/Admin/CrewTab';
 import MapStrategyTab from '@/Components/Admin/MapStrategyTab';
 import SchedulePanel from '@/Components/Admin/SchedulePanel';
-import { LayoutDashboard, Bus, Users, Map as MapIcon, Calendar, RefreshCw } from 'lucide-react';
+import RouteRegistry from '@/Components/Admin/RouteRegistry';
+import LiveMonitor from '@/Components/Admin/LiveMonitor';
+import { LayoutDashboard, Bus, Users, Map as MapIcon, Calendar, RefreshCw, Navigation, Radio, AlignJustify, AlertTriangle, X } from 'lucide-react';
+import { io } from 'socket.io-client';
+
+const socket = io(window.location.origin.replace('5173', '3005'));
 
 export default function OperationsCenter() {
   const [activeTab, setActiveTab] = useState('fleet');
@@ -12,12 +17,30 @@ export default function OperationsCenter() {
     armadas: [],
     crews: [],
     routes: [],
+    stops: [],
     schedules: []
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [toast, setToast] = useState(null); // { message, type, time }
+
+  useEffect(() => {
+    socket.on('delay_alert', (data) => {
+      // data: { schedule_id, route_name, delay_mins, reason }
+      const msg = `${data.route_name} is delayed by ${data.delay_mins} mins. Reason: ${data.reason}`;
+      setToast({ message: msg, type: 'warning', time: Date.now() });
+
+      // Auto dismiss
+      setTimeout(() => setToast(null), 8000);
+    });
+
+    return () => {
+      socket.off('delay_alert');
+    };
+  }, []);
 
   const fetchMasterData = async (silent = false) => {
+    // ... existing fetch function
     if (!silent) setIsLoading(true);
     else setIsRefreshing(true);
 
@@ -47,14 +70,30 @@ export default function OperationsCenter() {
   }, []);
 
   const tabs = [
+    { id: 'monitor', label: 'Live Monitor', icon: <Radio size={18} className="animate-pulse text-green-500" /> },
     { id: 'fleet', label: 'Fleet Management', icon: <Bus size={18} /> },
     { id: 'crew', label: 'Crew Manifest', icon: <Users size={18} /> },
+    { id: 'routes', label: 'Route Registry', icon: <Navigation size={18} /> },
     { id: 'strategy', label: 'Map Strategy', icon: <MapIcon size={18} /> },
     { id: 'schedules', label: 'Operations Sync', icon: <Calendar size={18} /> },
   ];
 
   return (
     <AdminLayout>
+      {toast && (
+        <div className="fixed top-24 right-6 z-[2000] animate-fade-in-left">
+          <div className="bg-white border-l-4 border-orange-500 shadow-2xl rounded-r-xl p-4 flex items-start gap-3 w-80">
+            <div className="mt-0.5"><AlertTriangle size={20} className="text-orange-500" /></div>
+            <div className="flex-1">
+              <h4 className="text-xs font-black uppercase tracking-widest text-orange-600 mb-1">Operational Alert</h4>
+              <p className="text-sm font-medium text-gray-800 leading-snug">{toast.message}</p>
+              <p className="text-[10px] text-gray-400 mt-2 font-mono">BROADCAST ID: {toast.time}</p>
+            </div>
+            <button onClick={() => setToast(null)} className="text-gray-300 hover:text-gray-500"><X size={16} /></button>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-[1600px] mx-auto">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
           <div>
@@ -95,6 +134,12 @@ export default function OperationsCenter() {
           </div>
         ) : (
           <div className="animate-fade-in">
+            {activeTab === 'monitor' && (
+              <LiveMonitor
+                schedules={data.schedules}
+                routes={data.routes}
+              />
+            )}
             {activeTab === 'fleet' && (
               <FleetTab
                 armadas={data.armadas}
@@ -109,6 +154,13 @@ export default function OperationsCenter() {
                 onCrewChange={() => fetchMasterData(true)}
               />
             )}
+            {activeTab === 'routes' && (
+              <RouteRegistry
+                routes={data.routes}
+                stops={data.stops}
+                onRefresh={() => fetchMasterData(true)}
+              />
+            )}
             {activeTab === 'strategy' && (
               <MapStrategyTab
                 armadas={data.armadas}
@@ -120,6 +172,8 @@ export default function OperationsCenter() {
             {activeTab === 'schedules' && (
               <SchedulePanel
                 schedules={data.schedules}
+                armadas={data.armadas}
+                crews={data.crews}
                 onRefresh={() => fetchMasterData(true)}
               />
             )}

@@ -26,25 +26,55 @@ const adminStreams = []; // List of admin calls
 
 // 1. Booking Service
 const createBooking = (call, callback) => {
-  const { user_id, armada_id, date, seats, total_price } = call.request;
+  const { user_id, armada_id, schedule_id, date, seats, total_price } = call.request;
   const seatStr = JSON.stringify(seats);
 
-  // Simple validation
-  if (!user_id || !armada_id || !seats.length) {
-    return callback(null, { success: false, error_message: "Invalid data" });
+  if (!user_id || !schedule_id || !seats.length) {
+    return callback(null, { success: false, error_message: "Missing Required Fields" });
   }
 
-  db.run("INSERT INTO bookings (user_id, armada_id, date, seats, total_price) VALUES (?, ?, ?, ?, ?)",
-    [user_id, armada_id, date, seatStr, total_price],
-    function (err) {
-      if (err) {
-        return callback(null, { success: false, error_message: err.message });
+  db.serialize(() => {
+    db.run("BEGIN TRANSACTION");
+
+    // 1. Double check capacity inside transaction
+    db.get("SELECT total_seats, seats_booked FROM schedules WHERE id = ?", [schedule_id], (err, schedule) => {
+      if (err || !schedule) {
+        db.run("ROLLBACK");
+        return callback(null, { success: false, error_message: "Schedule Not Found" });
       }
-      // Emit update for Admin Dashboard (via SeatSync or just Polling)
-      eventBus.emit('seat_update', { armada_id, booked_seats: seats });
-      callback(null, { success: true, booking_id: this.lastID.toString() });
-    }
-  );
+
+      if (schedule.total_seats - (schedule.seats_booked || 0) < seats.length) {
+        db.run("ROLLBACK");
+        return callback(null, { success: false, error_message: "Insufficient Capacity" });
+      }
+
+      // 2. Insert Booking
+      db.run("INSERT INTO bookings (user_id, armada_id, schedule_id, date, seats, total_price) VALUES (?, ?, ?, ?, ?, ?)",
+        [user_id, armada_id, schedule_id, date, seatStr, total_price],
+        function (err) {
+          if (err) {
+            db.run("ROLLBACK");
+            return callback(null, { success: false, error_message: err.message });
+          }
+
+          const bookingId = this.lastID;
+
+          // 3. Increment counters
+          db.run("UPDATE schedules SET seats_booked = seats_booked + ?, booked_seats = booked_seats + ? WHERE id = ?",
+            [seats.length, seats.length, schedule_id], (err) => {
+              if (err) {
+                db.run("ROLLBACK");
+                return callback(null, { success: false, error_message: "Failed to update inventory" });
+              }
+
+              db.run("COMMIT");
+              eventBus.emit('seat_update', { armada_id, schedule_id, booked_seats: seats });
+              callback(null, { success: true, booking_id: bookingId.toString() });
+            });
+        }
+      );
+    });
+  });
 };
 
 const getBookingStatus = (call, callback) => {
@@ -63,6 +93,13 @@ const joinChat = (call) => {
   const { user_id, role } = call.request;
   console.log(`User ${user_id} (${role}) connected to chat stream.`);
 
+  // Helper to send wrapped events
+  call.sendEvent = (type, payloadObj) => {
+    // payloadObj should be { message: ... } or { typing: ... }
+    // We spread it to match ChatEvent oneof structure: { type, message: ... }
+    call.write({ type, ...payloadObj });
+  };
+
   if (role === 'admin') {
     adminStreams.push(call);
     // Send history logic could go here
@@ -70,10 +107,11 @@ const joinChat = (call) => {
     userStreams.set(user_id, call);
     // Notify admins new user is online
     adminStreams.forEach(adminCall => {
-      adminCall.write({
-        type: 'user_online',
-        data: { sender_id: user_id, content: 'User Online', timestamp: new Date().toISOString() }
-      });
+      if (adminCall.sendEvent) {
+        adminCall.sendEvent('user_online', {
+          message: { sender_id: user_id, content: 'User Online', timestamp: new Date().toISOString() }
+        });
+      }
     });
   }
 
@@ -89,32 +127,59 @@ const joinChat = (call) => {
 };
 
 const sendMessage = (call) => {
-  call.on('data', (msg) => {
-    // msg: { sender_id, receiver_id, content, ... }
-    console.log(`Chat Msg: ${msg.sender_id} -> ${msg.receiver_id}: ${msg.content}`);
+  call.on('data', (wrapper) => {
+    // wrapper is ChatClientMessage { payload: 'message' | 'typing' | 'read' }
 
-    const timestamp = new Date().toISOString();
-    const fullMsg = { ...msg, timestamp };
+    // 1. Handle Text Message
+    if (wrapper.payload === 'message' && wrapper.message) {
+      const msg = wrapper.message;
+      console.log(`[gRPC Chat] ${msg.sender_id} -> ${msg.receiver_id}: ${msg.content}`);
 
-    // Logic: specific receiver or admin broadcast
-    if (msg.receiver_id === 'admin') {
-      // Send to ALL admins
-      adminStreams.forEach(adminCall => {
-        try {
-          // Start of stream call used as a "push" channel? 
-          // Actually, bidirectional means we usually use one method.
-          // But here we split: JoinChat puts them in "Listening Mode".
-          // SendMessage is "Sending Mode".
-          // We write to the *JoinChat* stream of the receiver.
-          adminCall.write(fullMsg);
-        } catch (e) { console.error("Error sending to admin", e); }
+      const timestamp = new Date().toISOString();
+      const fullMsg = { ...msg, timestamp };
+
+      // Persist to DB
+      db.run(
+        `INSERT INTO chat_messages (sender_id, sender_name, receiver_id, content, is_admin, created_at) 
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        [msg.sender_id, msg.sender_name || 'User', msg.receiver_id, msg.content, msg.is_admin ? 1 : 0, timestamp],
+        function (err) {
+          if (err) console.error('[gRPC Chat] DB Insert Error:', err);
+        }
+      );
+
+      // Emit for dashboard
+      eventBus.emit('chat_event', { type: 'new_message', message: fullMsg });
+
+      // Route to recipient
+      const targetStreams = msg.receiver_id === 'admin' ? adminStreams : [userStreams.get(msg.receiver_id)].filter(Boolean);
+      targetStreams.forEach(s => {
+        if (s && s.sendEvent) s.sendEvent('new_message', { message: fullMsg });
       });
-    } else {
-      // Send to specific User
-      const userStream = userStreams.get(msg.receiver_id);
-      if (userStream) {
-        userStream.write(fullMsg);
+    }
+
+    // 2. Handle Typing
+    else if (wrapper.payload === 'typing' && wrapper.typing) {
+      const { user_id, is_typing } = wrapper.typing;
+      const target = wrapper.typing.role === 'admin' ? userStreams.get(wrapper.typing.target_id) : null;
+
+      // If coming from user -> send to admins
+      if (!wrapper.typing.role || wrapper.typing.role !== 'admin') {
+        adminStreams.forEach(s => s.sendEvent && s.sendEvent('typing', { typing: wrapper.typing }));
       }
+      // If coming from admin -> send to specific user (need target_id in struct? or infer?)
+      // The proto definition for TypingIndicator is: string user_id, string user_name, bool is_typing.
+      // It lacks a "target_id". Let's assume broadcast to context or update proto? 
+      // For now, let's just broadcast to admins if from user.
+      // If from admin, we might need to know WHO they are typing to.
+      // Let's stick to "User typing" for now as per plan focus.
+    }
+
+    // 3. Handle Read Receipt
+    else if (wrapper.payload === 'read' && wrapper.read) {
+      // Broadcast read receipt
+      const targetStreams = adminStreams; // Simple default for user->admin read
+      targetStreams.forEach(s => s.sendEvent && s.sendEvent('read', { read: wrapper.read }));
     }
   });
 
@@ -165,7 +230,6 @@ const startServer = () => {
       return;
     }
     console.log(`gRPC Server running on port ${port}`);
-    server.start();
   });
 };
 

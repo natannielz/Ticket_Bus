@@ -28,14 +28,15 @@ export default function Login() {
         localStorage.setItem('token', result.token);
         localStorage.setItem('user', JSON.stringify(result.user));
 
+        // Debug logging
+        console.log('Login successful. Role:', result.user.role);
+
         // Role-based redirection
         if (result.user.role === 'admin') {
           navigate('/admin/operations');
         } else {
           navigate('/catalog');
         }
-
-        window.location.reload();
       } else {
         setErrors({ email: result.message || 'Login failed' });
       }
@@ -67,13 +68,13 @@ export default function Login() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-[10px] text-blue-600 font-semibold uppercase">Admin Access</p>
-                  <p className="text-sm font-mono text-gray-700">admin@example.com</p>
-                  <p className="text-sm font-mono text-gray-400 italic">pass: admin123</p>
+                  <p className="text-[11px] font-mono text-gray-700">admin@example.com</p>
+                  <p className="text-[11px] font-mono text-blue-500 font-bold">pass: password</p>
                 </div>
                 <div>
                   <p className="text-[10px] text-blue-600 font-semibold uppercase">User Access</p>
-                  <p className="text-sm font-mono text-gray-700">client@example.com</p>
-                  <p className="text-sm font-mono text-gray-400 italic">pass: client123</p>
+                  <p className="text-[11px] font-mono text-gray-700">user@example.com</p>
+                  <p className="text-[11px] font-mono text-blue-500 font-bold">pass: password</p>
                 </div>
               </div>
             </div>

@@ -41,19 +41,61 @@ export default function Bookings() {
               <ul className="divide-y divide-gray-200">
                 {bookings.map((booking) => (
                   <li key={booking.id} className="p-6 hover:bg-gray-50 transition-colors">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="text-lg font-bold text-accent">{booking.armada_name || `Armada #${booking.armada_id}`}</h3>
-                        <p className="text-sm text-gray-500">Date: {booking.date}</p>
-                        <p className="text-sm text-gray-500">Seats: {booking.seats}</p>
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <h3 className="text-lg font-bold text-gray-900">{booking.armada_name || `Armada #${booking.armada_id}`}</h3>
+                          <span className={`px-2 py-0.5 text-[10px] font-black uppercase rounded-full 
+                                              ${booking.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                              booking.status === 'confirmed' ? 'bg-green-100 text-green-800' :
+                                booking.status === 'cancelled' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'}`}>
+                            {booking.status}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-4 text-sm text-gray-500">
+                          <p>Date: <span className="font-medium text-gray-900">{booking.date}</span></p>
+                          <p>Seats: <span className="font-medium text-gray-900">{booking.seats}</span></p>
+                          <p>Route: <span className="font-medium text-gray-900">{booking.route_name || 'Strategic Deployment'}</span></p>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <p className="text-xl font-bold text-gray-900">IDR {parseInt(booking.total_price).toLocaleString('id-ID')}</p>
-                        <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full mt-1
-                                            ${booking.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                            booking.status === 'confirmed' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
-                          {booking.status}
-                        </span>
+
+                      <div className="flex flex-col items-end gap-2">
+                        <p className="text-xl font-black text-gray-900">IDR {parseInt(booking.total_price).toLocaleString('id-ID')}</p>
+                        <div className="flex gap-2 mt-2">
+                          {booking.status !== 'cancelled' && (
+                            <>
+                              <button
+                                onClick={() => navigate(`/booking/${booking.id}/ticket`)}
+                                className="px-4 py-2 bg-black text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-gray-800 transition-all shadow-md"
+                              >
+                                View Ticket
+                              </button>
+                              <button
+                                onClick={() => {
+                                  if (confirm("Are you sure you want to cancel this booking?")) {
+                                    const token = localStorage.getItem('token');
+                                    fetch(`/api/bookings/${booking.id}`, {
+                                      method: 'DELETE',
+                                      headers: { 'Authorization': `Bearer ${token}` }
+                                    })
+                                      .then(res => res.json())
+                                      .then(data => {
+                                        if (data.message) {
+                                          alert("Booking cancelled.");
+                                          window.location.reload();
+                                        } else {
+                                          alert(data.error || "Failed to cancel");
+                                        }
+                                      });
+                                  }
+                                }}
+                                className="px-4 py-2 border-2 border-red-500 text-red-500 text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-red-50 transition-all"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </li>

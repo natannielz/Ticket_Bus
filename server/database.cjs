@@ -46,13 +46,13 @@ function initDb() {
         {
           name: 'Administrator',
           email: 'admin@example.com',
-          password: bcrypt.hashSync('admin123', 8),
+          password: bcrypt.hashSync('password', 8),
           role: 'admin'
         },
         {
           name: 'Client User',
-          email: 'client@example.com',
-          password: bcrypt.hashSync('client123', 8),
+          email: 'user@example.com',
+          password: bcrypt.hashSync('password', 8),
           role: 'user'
         }
       ];
@@ -130,6 +130,12 @@ function initDb() {
     db.run("ALTER TABLE bookings ADD COLUMN passenger_name TEXT", (err) => { });
     db.run("ALTER TABLE bookings ADD COLUMN seat_numbers TEXT", (err) => { });
     db.run("ALTER TABLE bookings ADD COLUMN schedule_id INTEGER", (err) => { });
+    db.run("ALTER TABLE bookings ADD COLUMN booking_code TEXT", (err) => { }); // Unique handled in logic or via separate run if needed
+    db.run("ALTER TABLE bookings ADD COLUMN cancelled_at TEXT", (err) => { });
+    db.run("ALTER TABLE bookings ADD COLUMN cancellation_reason TEXT", (err) => { });
+
+    // Create unique index for booking_code separately to avoid ALTER TABLE limitations in older SQLite
+    db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_booking_code ON bookings(booking_code)", (err) => { });
 
     // Migration for Users Table
     db.run("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'Active'", (err) => { });
@@ -219,6 +225,9 @@ function initDb() {
       }
       if (!columnNames.includes('needs_reassignment')) {
         db.run("ALTER TABLE schedules ADD COLUMN needs_reassignment INTEGER DEFAULT 0");
+      }
+      if (!columnNames.includes('booked_seats')) {
+        db.run("ALTER TABLE schedules ADD COLUMN booked_seats INTEGER DEFAULT 0");
       }
     });
   });

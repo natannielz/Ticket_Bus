@@ -130,12 +130,12 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
         {/* Chart Section */}
-        <div className="lg:col-span-2 bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <div className="lg:col-span-2 bg-white rounded-xl p-6 shadow-sm border border-gray-100 min-w-0">
           <h3 className="text-lg font-bold text-gray-900 mb-6 flex items-center gap-2">
             <Activity size={20} className="text-gray-400" /> Revenue Trend
           </h3>
-          <div className="w-full" style={{ height: '300px' }}>
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="w-full h-[300px] min-h-[300px]">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <LineChart data={stats.revenueData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
                 <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#9ca3af' }} dy={10} />
@@ -148,10 +148,10 @@ export default function Dashboard() {
         </div>
 
         {/* Occupancy Pie Chart */}
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 min-w-0">
           <h3 className="text-lg font-bold text-gray-900 mb-6">Fleet Occupancy</h3>
-          <div className="w-full relative" style={{ height: '300px' }}>
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="w-full relative h-[300px] min-h-[300px]">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <PieChart>
                 <Pie
                   data={stats.occupancyData}

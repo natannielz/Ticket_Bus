@@ -3,6 +3,11 @@ import { Bus, Settings, Trash2, CheckCircle, AlertTriangle, PenTool, Plus } from
 
 export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
   const [isCreating, setIsCreating] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterStatus, setFilterStatus] = useState('all');
+
   const [form, setForm] = useState({
     name: '',
     capacity: 40,
@@ -14,13 +19,33 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
   });
 
   const handleDelete = async (id) => {
-    if (!confirm("Yakin ingin menghapus armada ini?")) return;
+    if (!confirm("Are you sure you want to delete this armada?")) return;
     const token = localStorage.getItem('token');
-    await fetch(`/api/admin/armadas/${id}`, {
+    const res = await fetch(`/api/admin/armadas/${id}`, {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${token}` }
     });
-    onArmadaChange();
+
+    if (res.status === 409) {
+      const data = await res.json();
+      alert(data.message || "Cannot delete: This armada is linked to an active schedule.");
+    } else {
+      onArmadaChange();
+    }
+  };
+
+  const handleEdit = (armada) => {
+    setForm({
+      name: armada.name,
+      capacity: armada.capacity,
+      price_per_km: armada.price_per_km,
+      level: armada.level,
+      license_plate: armada.license_plate,
+      status: armada.status,
+      image_path: armada.image_path || ''
+    });
+    setEditingId(armada.id);
+    setIsEditing(true);
   };
 
   const handleUpdateStatus = async (id, newStatus) => {
@@ -34,23 +59,29 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
       body: JSON.stringify({ status: newStatus })
     });
     if (res.ok) {
-      onStatusChange(); // This triggers parent refresh to catch schedule flagging
+      onStatusChange();
     }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     const token = localStorage.getItem('token');
-    const res = await fetch('/api/admin/armadas', {
-      method: 'POST',
+    const url = isEditing ? `/api/admin/armadas/${editingId}` : '/api/admin/armadas';
+    const method = isEditing ? 'PUT' : 'POST';
+
+    const res = await fetch(url, {
+      method: method,
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
       body: JSON.stringify(form)
     });
+
     if (res.ok) {
       setIsCreating(false);
+      setIsEditing(false);
+      setEditingId(null);
       setForm({
         name: '',
         capacity: 40,
@@ -64,27 +95,65 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
     }
   };
 
+  const filteredArmadas = armadas.filter(a => {
+    const matchesSearch = a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (a.license_plate && a.license_plate.toLowerCase().includes(searchQuery.toLowerCase()));
+    const matchesStatus = filterStatus === 'all' || a.status === filterStatus;
+    return matchesSearch && matchesStatus;
+  });
+
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
         <div>
           <h2 className="text-xl font-bold text-gray-900">Fleet Management</h2>
           <p className="text-sm text-gray-500">Manage buses, maintenance schedules, and assignments.</p>
         </div>
-        <button
-          onClick={() => setIsCreating(true)}
-          className="px-4 py-2 bg-black text-white rounded-xl font-bold text-sm hover:bg-gray-800 transition-all flex items-center gap-2"
-        >
-          <Plus size={18} /> Add New Armada
-        </button>
+        <div className="flex items-center gap-3 w-full md:w-auto">
+          <div className="relative flex-1 md:w-64">
+            <input
+              type="text"
+              placeholder="Search fleet..."
+              className="w-full pl-10 pr-4 py-2 rounded-xl border-gray-200 text-sm focus:ring-black focus:border-black"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+            />
+            <Settings className="absolute left-3 top-2.5 text-gray-400" size={16} />
+          </div>
+          <button
+            onClick={() => {
+              setIsEditing(false);
+              setForm({ name: '', capacity: 40, price_per_km: 500, level: 'Economy', license_plate: '', status: 'available', image_path: '' });
+              setIsCreating(true);
+            }}
+            className="px-4 py-2 bg-black text-white rounded-xl font-bold text-sm hover:bg-gray-800 transition-all flex items-center gap-2 shrink-0"
+          >
+            <Plus size={18} /> Add New
+          </button>
+        </div>
       </div>
 
-      {/* Add New Armada Modal */}
-      {isCreating && (
+      {/* Filter Chips */}
+      <div className="flex gap-2 mb-6 overflow-x-auto pb-2 custom-scrollbar">
+        {['all', 'available', 'on_duty', 'maintenance'].map(status => (
+          <button
+            key={status}
+            onClick={() => setFilterStatus(status)}
+            className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all
+              ${filterStatus === status ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-400 border-gray-100 hover:border-gray-200'}
+            `}
+          >
+            {status.replace('_', ' ')}
+          </button>
+        ))}
+      </div>
+
+      {/* Add/Edit Modal */}
+      {(isCreating || isEditing) && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl w-full max-w-lg p-6 shadow-2xl animate-fade-in-up">
             <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
-              <Bus size={20} className="text-indigo-600" /> Add New Armada
+              <Bus size={20} className="text-indigo-600" /> {isEditing ? 'Update Armada' : 'Add New Armada'}
             </h2>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
@@ -151,7 +220,7 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1 tracking-widest">Initial Status</label>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1 tracking-widest">Status</label>
                   <select
                     className="w-full rounded-xl border-gray-200 focus:ring-black focus:border-black"
                     value={form.status}
@@ -176,7 +245,7 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
               <div className="flex gap-3 pt-4">
                 <button
                   type="button"
-                  onClick={() => setIsCreating(false)}
+                  onClick={() => { setIsCreating(false); setIsEditing(false); }}
                   className="flex-1 py-3 bg-gray-100 rounded-xl font-bold text-gray-600 hover:bg-gray-200 transition-all"
                 >
                   Cancel
@@ -185,7 +254,7 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
                   type="submit"
                   className="flex-1 py-3 bg-black text-white rounded-xl font-bold hover:bg-gray-800 shadow-lg shadow-gray-200 transition-all flex items-center justify-center gap-2"
                 >
-                  <Bus size={16} /> Add Armada
+                  <CheckCircle size={16} /> {isEditing ? 'Save Changes' : 'Add Armada'}
                 </button>
               </div>
             </form>
@@ -194,7 +263,7 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-        {armadas.map(armada => {
+        {filteredArmadas.map(armada => {
           const hasServiceDue = armada.next_service_date && new Date(armada.next_service_date) < new Date();
 
           let statusColor = 'bg-green-100 text-green-700 border-green-200';
@@ -217,7 +286,7 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
                 </div>
 
                 <img
-                  src={armada.image_path ? `/images/armadas/${armada.image_path}` : 'https://via.placeholder.com/600x400'}
+                  src={armada.image_path ? `/images/armadas/${armada.image_path}` : 'https://placehold.co/600x400?text=No+Image'}
                   className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
                   alt={armada.name}
                 />
@@ -225,6 +294,15 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
                 <div className="absolute bottom-3 left-3 text-white">
                   <span className="px-2 py-0.5 bg-black/50 backdrop-blur rounded text-[10px] font-bold uppercase tracking-wider border border-white/20">{armada.level}</span>
                   <h3 className="text-md font-bold leading-tight mt-1 drop-shadow-md">{armada.name}</h3>
+                </div>
+
+                <div className="absolute top-3 left-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    onClick={() => handleEdit(armada)}
+                    className="p-2 bg-white/90 backdrop-blur rounded-lg shadow-sm text-gray-700 hover:text-indigo-600 transition-colors"
+                  >
+                    <Settings size={18} />
+                  </button>
                 </div>
               </div>
 
@@ -272,4 +350,5 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
     </div>
   );
 }
+
 

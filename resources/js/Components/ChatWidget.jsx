@@ -7,7 +7,9 @@ export default function ChatWidget() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
+  const [adminTyping, setAdminTyping] = useState(false);
   const socketRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
 
   // Get user from local storage
   const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -18,7 +20,8 @@ export default function ChatWidget() {
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
-  useEffect(scrollToBottom, [messages]);
+  useEffect(scrollToBottom, [messages]); // Scroll on message update
+  useEffect(scrollToBottom, [adminTyping]); // Scroll on typing indicator toggle
 
   useEffect(() => {
     if (isOpen && !socketRef.current) {
@@ -39,7 +42,8 @@ export default function ChatWidget() {
       const result = await res.json();
       if (result.data) setMessages(result.data.map(m => ({
         ...m,
-        isAdmin: m.is_admin === 1,
+        // Handle integer from DB
+        isAdmin: !!m.is_admin,
         time: new Date(m.created_at).toLocaleTimeString()
       })));
     } catch (err) {
@@ -47,7 +51,7 @@ export default function ChatWidget() {
     }
 
     // Initialize Socket
-    const socket = io('http://localhost:3000');
+    const socket = io('http://localhost:3005');
     socketRef.current = socket;
 
     socket.on('connect', () => {
@@ -56,11 +60,25 @@ export default function ChatWidget() {
     });
 
     socket.on('receive_message', (msg) => {
-      setMessages(prev => [...prev, {
-        ...msg,
-        isAdmin: msg.is_admin === 1,
-        time: new Date().toLocaleTimeString()
-      }]);
+      setMessages(prev => {
+        // Prevent duplicate if it's our own optimistic message coming back
+        const isDuplicate = prev.some(m => m.content === msg.content && m.isAdmin === !!msg.is_admin);
+        if (isDuplicate && !msg.is_admin) return prev;
+
+        return [...prev, {
+          ...msg,
+          // Handle both boolean (socket) and integer (db) types
+          isAdmin: !!msg.is_admin,
+          time: new Date().toLocaleTimeString()
+        }];
+      });
+    });
+
+    socket.on('typing', (data) => {
+      // data: { user_id, is_typing, role ... }
+      if (data.role === 'admin') {
+        setAdminTyping(data.is_typing);
+      }
     });
 
     socket.on('disconnect', () => {
@@ -79,8 +97,57 @@ export default function ChatWidget() {
       is_admin: false
     };
 
+    // Optimistic Update
+    const tempMsg = {
+      id: `temp-${Date.now()}`,
+      content: input,
+      isAdmin: false,
+      time: new Date().toLocaleTimeString()
+    };
+    setMessages(prev => [...prev, tempMsg]);
+
     socketRef.current.emit('send_message', msgData);
     setInput('');
+
+    // Clear typing status immediately on send
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    socketRef.current.emit('typing', {
+      user_id: user.id,
+      user_name: user.name,
+      role: 'user',
+      receiver_id: 'admin',
+      is_typing: false
+    });
+  };
+
+  const handleInputChange = (e) => {
+    const val = e.target.value;
+    setInput(val);
+
+    if (!socketRef.current) return;
+
+    // Don't emit typing for every char, maybe guard? But server handles it.
+    // Logic: Emit 'true' immediately, then set timeout to emit 'false'.
+    // If new char comes, clear timeout and re-set it.
+
+    socketRef.current.emit('typing', {
+      user_id: user.id,
+      user_name: user.name,
+      role: 'user',
+      receiver_id: 'admin',
+      is_typing: true
+    });
+
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      socketRef.current.emit('typing', {
+        user_id: user.id,
+        user_name: user.name,
+        role: 'user',
+        receiver_id: 'admin',
+        is_typing: false
+      });
+    }, 2000);
   };
 
   return (
@@ -119,6 +186,19 @@ export default function ChatWidget() {
                 </div>
               </div>
             ))}
+
+            {adminTyping && (
+              <div className="flex justify-start animate-pulse">
+                <div className="bg-gray-200 text-gray-500 rounded-2xl p-3 text-xs shadow-sm bg-white border border-gray-100 rounded-tl-none">
+                  <span className="flex gap-1">
+                    <span className="w-1 h-1 bg-gray-400 rounded-full animate-bounce"></span>
+                    <span className="w-1 h-1 bg-gray-400 rounded-full animate-bounce delay-75"></span>
+                    <span className="w-1 h-1 bg-gray-400 rounded-full animate-bounce delay-150"></span>
+                  </span>
+                </div>
+              </div>
+            )}
+
             <div ref={messagesEndRef} />
           </div>
 
@@ -128,7 +208,7 @@ export default function ChatWidget() {
               className="flex-1 bg-gray-100 border-0 rounded-xl text-xs px-3 focus:ring-1 focus:ring-black"
               placeholder="Type a message..."
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={handleInputChange}
               onKeyPress={(e) => e.key === 'Enter' && handleSend()}
             />
             <button

@@ -13,6 +13,13 @@ export default function Register() {
 
   const submit = async (e) => {
     e.preventDefault();
+
+    // Password confirmation validation
+    if (data.password !== data.password_confirmation) {
+      setErrors({ password: 'Passwords do not match' });
+      return;
+    }
+
     setProcessing(true);
     setErrors({});
 
@@ -110,11 +117,31 @@ export default function Register() {
                     id="password"
                     type="password"
                     required
+                    minLength={6}
                     className="appearance-none block w-full px-3 py-2 border-b border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:border-accent-blue focus:ring-0 sm:text-sm"
                     value={data.password}
                     onChange={(e) => setData({ ...data, password: e.target.value })}
                   />
                   {errors.password && <div className="text-red-600 text-sm mt-1">{errors.password}</div>}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label htmlFor="password_confirmation" className="block text-sm font-medium text-gray-700">
+                  Confirm Password
+                </label>
+                <div className="mt-1">
+                  <input
+                    id="password_confirmation"
+                    type="password"
+                    required
+                    className="appearance-none block w-full px-3 py-2 border-b border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:border-accent-blue focus:ring-0 sm:text-sm"
+                    value={data.password_confirmation || ''}
+                    onChange={(e) => setData({ ...data, password_confirmation: e.target.value })}
+                  />
+                  {data.password_confirmation && data.password !== data.password_confirmation && (
+                    <div className="text-red-600 text-sm mt-1">Passwords do not match</div>
+                  )}
                 </div>
               </div>
 

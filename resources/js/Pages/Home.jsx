@@ -1,44 +1,45 @@
 import React, { useState, useEffect } from 'react';
 import GuestLayout from '@/Layouts/GuestLayout';
 import { useNavigate } from 'react-router-dom';
+import { Star } from 'lucide-react';
 
 export default function Home() {
   const navigate = useNavigate();
-  const [events, setEvents] = useState([]);
-  const [selectedEvent, setSelectedEvent] = useState(null);
-
-  // Mock auth for now
-  const auth = { user: null };
+  const [schedules, setSchedules] = useState([]);
+  const [selectedSchedule, setSelectedSchedule] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/armadas')
+    fetch('/api/schedules')
       .then(res => res.json())
       .then(data => {
-        if (data.data) setEvents(data.data);
+        if (data.data) {
+          // Transform schedules to match the display format
+          setSchedules(data.data.map(s => ({
+            ...s,
+            name: s.armada_name,
+            level: s.armada_level,
+            image_path: s.armada_image,
+            status: s.is_live ? 'active' : 'available'
+          })));
+        }
+        setLoading(false);
       })
-      .catch(err => console.error("Failed to fetch armadas", err));
+      .catch(err => {
+        console.error("Failed to fetch schedules", err);
+        setLoading(false);
+      });
   }, []);
 
   const [formData, setFormData] = useState({
-    armada_id: '',
-    date: '',
+    schedule_id: '',
+    date: new Date().toISOString().split('T')[0],
     seats: 1
   });
 
   const [processing, setProcessing] = useState(false);
-  const [errors, setErrors] = useState({});
 
-  const setData = (key, value) => {
-    setFormData(prev => ({ ...prev, [key]: value }));
-  };
-
-  useEffect(() => {
-    if (selectedEvent) {
-      setFormData(prev => ({ ...prev, armada_id: selectedEvent.id }));
-    }
-  }, [selectedEvent]);
-
-  const openDrawer = (event) => {
+  const openDrawer = (schedule) => {
     const token = localStorage.getItem('token');
     if (!token) {
       if (confirm("You must be logged in to book. Go to Login?")) {
@@ -46,13 +47,13 @@ export default function Home() {
       }
       return;
     }
-    setSelectedEvent(event);
-    setFormData(prev => ({ ...prev, armada_id: event.id }));
+    setSelectedSchedule(schedule);
+    setFormData(prev => ({ ...prev, schedule_id: schedule.id }));
   };
 
   const closeDrawer = () => {
-    setSelectedEvent(null);
-    setFormData({ armada_id: '', date: '', seats: 1 });
+    setSelectedSchedule(null);
+    setFormData({ schedule_id: '', date: new Date().toISOString().split('T')[0], seats: 1 });
   };
 
   const submitBooking = async (e) => {
@@ -68,17 +69,19 @@ export default function Home() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          ...formData,
-          total_price: selectedEvent.price_per_km * formData.seats
+          schedule_id: formData.schedule_id,
+          date: formData.date,
+          seats: formData.seats
         })
       });
 
       if (res.ok) {
         alert("Booking Successful!");
         closeDrawer();
+        navigate('/bookings');
       } else {
         const err = await res.json();
-        alert("Booking failed: " + err.message);
+        alert("Booking failed: " + (err.error || err.message));
       }
     } catch (error) {
       console.error(error);
@@ -89,7 +92,7 @@ export default function Home() {
   };
 
   // Calculate total price dynamically
-  const totalPrice = selectedEvent ? (selectedEvent.price_per_km * formData.seats) : 0;
+  const totalPrice = selectedSchedule ? (selectedSchedule.price * formData.seats) : 0;
 
   return (
     <GuestLayout>
@@ -122,67 +125,87 @@ export default function Home() {
         </div>
       </div>
 
-      {/* --- CATALOG SECTION --- */}
-      <div className="bg-primary-bg py-12" id="catalog">
+      {/* --- FLEET SHOWCASE SECTION --- */}
+      <div className="bg-gray-50 py-24" id="fleet">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="text-center">
-            <h2 className="text-base font-semibold text-accent tracking-wide uppercase">Key Properties</h2>
-            <p className="mt-1 text-4xl font-extrabold text-text-main sm:text-5xl sm:tracking-tight lg:text-6xl">
-              Available Experiences
-            </p>
+          <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-12 gap-6">
+            <div className="max-w-2xl">
+              <h2 className="text-[10px] font-black text-accent-blue uppercase tracking-[0.2em] mb-4">Strategic Inventory</h2>
+              <p className="text-4xl md:text-5xl font-black text-gray-900 tracking-tight leading-tight uppercase">
+                Available Resource <span className="text-accent-blue">Showcase</span>
+              </p>
+              <p className="mt-4 text-gray-500 font-medium text-lg italic">
+                Explore our tactical fleet configured for peak operational performance.
+              </p>
+            </div>
+            <button
+              onClick={() => navigate('/catalog')}
+              className="px-8 py-4 bg-black text-white rounded-2xl font-black uppercase text-xs tracking-widest hover:scale-105 active:scale-95 transition-all shadow-xl shadow-black/10"
+            >
+              Browse Operational Catalog
+            </button>
           </div>
 
-          <div className="mt-12 grid gap-8 mx-auto md:grid-cols-2 lg:grid-cols-3 lg:max-w-none">
-            {events.map((event) => (
+          <div className="grid gap-8 mx-auto md:grid-cols-2 lg:grid-cols-3 lg:max-w-none">
+            {loading ? (
+              <div className="col-span-3 text-center py-12 text-gray-400">Loading schedules...</div>
+            ) : schedules.length === 0 ? (
+              <div className="col-span-3 text-center py-12 text-gray-400">No schedules available</div>
+            ) : schedules.map((schedule) => (
               <div
-                key={event.id}
-                className="group flex flex-col rounded-card overflow-hidden bg-white shadow-soft transition-all duration-300 hover:-translate-y-2 hover:shadow-2xl cursor-pointer h-full border border-gray-100"
-                onClick={() => openDrawer(event)}
+                key={schedule.id}
+                onClick={() => navigate(`/catalog/${schedule.id}`)}
+                className="group relative flex flex-col rounded-[2.5rem] overflow-hidden bg-white shadow-sm border border-gray-100 transition-all duration-500 hover:shadow-2xl hover:-translate-y-2 h-full cursor-pointer"
               >
-                <div className="flex-shrink-0 relative overflow-hidden h-56">
-                  <div className="absolute inset-0 bg-black/10 group-hover:bg-transparent transition-colors z-10" />
+                <div className="flex-shrink-0 relative h-64 overflow-hidden">
+                  <div className="absolute top-6 left-6 z-20">
+                    <span className="bg-black/40 backdrop-blur-md text-white text-[9px] font-black px-3 py-1.5 rounded-full uppercase tracking-widest border border-white/10">
+                      {schedule.level}
+                    </span>
+                  </div>
                   <img
-                    className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
-                    src={event.image_path ? `/images/armadas/${event.image_path}` : `https://images.unsplash.com/photo-${1500000000000 + event.id}?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80`}
+                    className="h-full w-full object-cover transition-transform duration-1000 group-hover:scale-110"
+                    src={schedule.image_path ? `/images/armadas/${schedule.image_path}` : `https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=800`}
                     onError={(e) => {
                       e.target.onerror = null;
-                      e.target.style.display = 'none';
-                      e.target.parentNode.classList.add('bg-gray-200', 'flex', 'items-center', 'justify-center');
-                      e.target.parentNode.innerHTML = '<span class="text-gray-400 font-bold text-xs uppercase">No Image</span>';
+                      e.target.src = 'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=800';
                     }}
-                    alt={event.name}
+                    alt={schedule.name}
                   />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-60" />
                 </div>
-                <div className="flex-1 p-6 flex flex-col justify-between">
+
+                <div className="flex-1 p-8 flex flex-col justify-between">
                   <div>
-                    <div className="flex justify-between items-start">
-                      <p className="text-xs font-bold px-2 py-1 bg-blue-50 text-accent-blue rounded-full uppercase tracking-wide">
-                        Available
-                      </p>
-                      <div className="flex items-center text-gray-400 text-xs">
-                        <span className="mr-1">★</span> 4.8
+                    <div className="flex justify-between items-center mb-4">
+                      <div className="flex items-center gap-1.5">
+                        <div className={`w-2 h-2 rounded-full ${schedule.is_live ? 'bg-green-500 animate-pulse' : 'bg-orange-500'}`} />
+                        <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">
+                          {schedule.route_name}
+                        </span>
+                      </div>
+                      <div className="flex items-center text-gray-900 font-black text-xs">
+                        <Star size={12} className="text-yellow-400 mr-1" fill="currentColor" /> 4.9
                       </div>
                     </div>
 
-                    <div className="block mt-4">
-                      <h3 className="text-xl font-bold text-text-main group-hover:text-accent-blue transition-colors">
-                        {event.name}
-                      </h3>
-                      <p className="mt-2 text-sm text-gray-500 line-clamp-2">
-                        Experience premium travel with our {event.name} package. Includes {event.capacity} seats and luxury amenities.
-                      </p>
-                    </div>
+                    <h3 className="text-2xl font-black text-gray-900 group-hover:text-accent-blue transition-colors uppercase tracking-tight mb-2">
+                      {schedule.name}
+                    </h3>
+                    <p className="text-sm text-gray-500 font-medium line-clamp-2 italic leading-relaxed">
+                      {schedule.origin} → {schedule.destination} • Departs {schedule.departure_time}
+                    </p>
                   </div>
-                  <div className="mt-6 flex items-center justify-between border-t border-gray-50 pt-4">
-                    <div className="flex flex-col">
-                      <span className="text-xs text-gray-400 uppercase font-semibold">Price per ticket</span>
-                      <span className="text-lg font-extrabold text-text-main">
-                        IDR {parseInt(event.price_per_km).toLocaleString('id-ID')}
-                      </span>
+
+                  <div className="mt-8 grid grid-cols-2 gap-4">
+                    <div className="p-3 rounded-2xl bg-gray-50 border border-gray-100">
+                      <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1">Price</p>
+                      <p className="text-sm font-black text-gray-900">IDR {schedule.price?.toLocaleString('id-ID')}</p>
                     </div>
-                    <button className="inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-accent hover:bg-accent-blue transition-all duration-200 shadow-md hover:shadow-lg transform active:scale-95">
-                      Book Now
-                    </button>
+                    <div className="p-3 rounded-2xl bg-gray-50 border border-gray-100">
+                      <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1">Capacity</p>
+                      <p className="text-sm font-black text-gray-900">{schedule.capacity} Seats</p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -190,89 +213,6 @@ export default function Home() {
           </div>
         </div>
       </div>
-
-      {/* --- SIDE DRAWER (CHECKOUT) --- */}
-      {selectedEvent && (
-        <div className="fixed inset-0 overflow-hidden z-50">
-          <div className="absolute inset-0 overflow-hidden">
-            <div className="absolute inset-0 bg-gray-500 bg-opacity-75 transition-opacity" onClick={closeDrawer}></div>
-            <section className="absolute inset-y-0 right-0 pl-10 max-w-full flex">
-              <div className="w-screen max-w-md animate-slide-in-right">
-                <div className="h-full flex flex-col bg-white shadow-xl overflow-y-scroll">
-                  <div className="py-6 px-4 sm:px-6 bg-accent">
-                    <div className="flex items-center justify-between">
-                      <h2 className="text-lg font-medium text-white">Checkout</h2>
-                      <button onClick={closeDrawer} className="text-gray-200 hover:text-white">
-                        <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </div>
-                    <p className="mt-1 text-sm text-gray-300">Booking: {selectedEvent.name}</p>
-                  </div>
-                  <div className="relative flex-1 py-6 px-4 sm:px-6">
-                    <form onSubmit={submitBooking} className="space-y-6">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700">Date</label>
-                        <input
-                          type="date"
-                          required
-                          className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-accent focus:border-accent sm:text-sm"
-                          value={formData.date}
-                          onChange={e => setData('date', e.target.value)}
-                        />
-                        {errors.date && <p className="text-red-500 text-xs mt-1">{errors.date}</p>}
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700">Seats</label>
-                        <input
-                          type="number"
-                          min="1"
-                          max={selectedEvent.capacity}
-                          required
-                          className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-accent focus:border-accent sm:text-sm"
-                          value={formData.seats}
-                          onChange={e => setData('seats', e.target.value)}
-                        />
-                        {errors.seats && <p className="text-red-500 text-xs mt-1">{errors.seats}</p>}
-                      </div>
-
-                      <div className="border-t border-gray-200 pt-4">
-                        <div className="flex justify-between text-base font-medium text-gray-900">
-                          <p>One Ticket</p>
-                          <p>IDR {parseInt(selectedEvent.price_per_km).toLocaleString('id-ID')}</p>
-                        </div>
-                        <div className="flex justify-between text-lg font-bold text-accent mt-2">
-                          <p>Total</p>
-                          <p>IDR {totalPrice.toLocaleString('id-ID')}</p>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-3 gap-y-3 sm:gap-y-0">
-                        <button
-                          type="button"
-                          onClick={closeDrawer}
-                          className="w-full flex justify-center py-3 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 mt-3 sm:mt-0"
-                        >
-                          Back
-                        </button>
-                        <button
-                          type="submit"
-                          disabled={processing}
-                          className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-accent hover:bg-accent-blue transition duration-150 ease-in-out disabled:opacity-50"
-                        >
-                          {processing ? 'Processing...' : 'Confirm Payment'}
-                        </button>
-                      </div>
-                    </form>
-                  </div>
-                </div>
-              </div>
-            </section>
-          </div>
-        </div>
-      )}
     </GuestLayout>
   );
 }
