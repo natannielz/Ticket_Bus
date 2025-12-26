@@ -25,43 +25,52 @@ export default function SupportInbox() {
     fetchConversations();
 
     const SOCKET_URL = import.meta.env?.VITE_SOCKET_URL || 'http://localhost:3005';
-    const socket = io(SOCKET_URL);
+    // Use a single socket connection
+    const socket = io(SOCKET_URL, {
+      // Optional: Add reconnection options
+      reconnection: true,
+      reconnectionAttempts: 5
+    });
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      socket.emit('join', { userId: user.id, role: user.role });
+      // Join using the user ID from localStorage
+      const storedUser = JSON.parse(localStorage.getItem('user') || '{}');
+      if (storedUser.id) {
+        socket.emit('join', { userId: storedUser.id, role: storedUser.role });
+      }
     });
 
     socket.on('receive_message', (msg) => {
       console.log("[Admin Inbox] Received:", msg);
-      // If message is for the currently open chat, append it
-      setMessages(prev => {
-        const chat = activeChatRef.current;
-        if (chat && (msg.sender_id === chat.sender_id || msg.receiver_id === chat.sender_id)) {
-          // Prevent duplicates
-          const isMe = !!msg.is_admin; // Derived value
-          console.log(`[Admin Inbox] Processing for ${chat.id}:`, { msg_admin: msg.is_admin, isMe });
 
-          const exists = prev.some(m => m.id === msg.id || (m.content === msg.content && m.isMe === isMe));
-          if (exists && msg.id.toString().includes('temp')) return prev;
+      // Use the REF to get the current active chat without re-binding the listener
+      const currentChat = activeChatRef.current;
+
+      // If message is for the currently open chat, append it
+      if (currentChat && (String(msg.sender_id) === String(currentChat.sender_id) || String(msg.receiver_id) === String(currentChat.sender_id))) {
+        setMessages(prev => {
+          // Prevent duplicates using string comparison for IDs
+          const isMe = !!msg.is_admin;
+          const exists = prev.some(m => String(m.id) === String(msg.id) || (m.content === msg.content && m.isMe === isMe));
+
+          if (exists) return prev;
 
           return [...prev, {
             id: msg.id,
             sender: msg.sender_name,
             content: msg.content,
-            // Handle both boolean and integer
             isMe: isMe,
             time: new Date(msg.created_at || Date.now()).toLocaleTimeString()
           }];
-        }
-        return prev;
-      });
-      // Refresh conversation list to show latest message/status
+        });
+      }
+
+      // Always refresh conversation list
       fetchConversations();
     });
 
     socket.on('typing', (data) => {
-      // data: { user_id, is_typing ... }
       if (data.role !== 'admin') {
         setTypingUsers(prev => ({
           ...prev,
@@ -70,8 +79,10 @@ export default function SupportInbox() {
       }
     });
 
-    return () => socket.disconnect();
-  }, [activeChat]);
+    return () => {
+      socket.disconnect();
+    };
+  }, []); // Empty dependency array -> Run once on mount
 
   const fetchConversations = async () => {
     try {

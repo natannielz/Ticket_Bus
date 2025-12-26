@@ -57,9 +57,9 @@ const authenticateToken = (req, res, next) => {
     if (err) return res.status(403).json({ error: "Forbidden: Invalid Token" });
 
     // FETCH FRESH ROLE FROM DB
-    // console.log("Verifying fresh role for user:", user.id);
+    console.log("Verifying fresh role for user:", user.id, user.email);
     db.get("SELECT role FROM users WHERE id = ?", [user.id], (dbErr, row) => {
-      // console.log("DB Role Fetch Result:", dbErr, row);
+      console.log("DB Role Fetch Result:", dbErr, row);
       if (dbErr) {
         console.error("Auth DB Error:", dbErr);
         return res.status(500).json({ error: "Auth DB Error" });
@@ -68,6 +68,8 @@ const authenticateToken = (req, res, next) => {
         console.error("User not found in DB during auth:", user.id);
         return res.status(403).json({ error: "Forbidden: User not found" });
       }
+
+      console.log(`[Auth] User ${user.id} authenticated as ${row.role}`);
 
       // Update user object with fresh role
       req.user = { ...user, role: row.role };
@@ -164,24 +166,6 @@ io.on('connection', (socket) => {
           };
 
           eventBus.emit('chat_event', { type: 'new_message', message: fullMsg });
-
-          // Broadcast to Socket.IO clients
-          try {
-            if (receiver_id === 'admin') {
-              io.to('admin_room').emit('receive_message', { ...fullMsg, isAdmin: safeIsAdmin });
-            } else {
-              io.to(String(receiver_id)).emit('receive_message', { ...fullMsg, isAdmin: safeIsAdmin });
-            }
-
-            if (receiver_id !== 'admin') {
-              io.to('admin_room').emit('receive_message', { ...fullMsg, isAdmin: safeIsAdmin });
-            }
-
-            // Echo to sender
-            io.to(String(sender_id)).emit('receive_message', { ...fullMsg, isAdmin: safeIsAdmin });
-          } catch (e) {
-            console.error("Socket Emit Error:", e);
-          }
         }
       }
     );
