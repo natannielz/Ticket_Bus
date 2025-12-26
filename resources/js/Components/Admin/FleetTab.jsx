@@ -1,7 +1,18 @@
-import React from 'react';
-import { Bus, Settings, Trash2, CheckCircle, AlertTriangle, PenTool } from 'lucide-react';
+import React, { useState } from 'react';
+import { Bus, Settings, Trash2, CheckCircle, AlertTriangle, PenTool, Plus } from 'lucide-react';
 
 export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
+  const [isCreating, setIsCreating] = useState(false);
+  const [form, setForm] = useState({
+    name: '',
+    capacity: 40,
+    price_per_km: 500,
+    level: 'Economy',
+    license_plate: '',
+    status: 'available',
+    image_path: ''
+  });
+
   const handleDelete = async (id) => {
     if (!confirm("Yakin ingin menghapus armada ini?")) return;
     const token = localStorage.getItem('token');
@@ -27,6 +38,32 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
     }
   };
 
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const token = localStorage.getItem('token');
+    const res = await fetch('/api/admin/armadas', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(form)
+    });
+    if (res.ok) {
+      setIsCreating(false);
+      setForm({
+        name: '',
+        capacity: 40,
+        price_per_km: 500,
+        level: 'Economy',
+        license_plate: '',
+        status: 'available',
+        image_path: ''
+      });
+      onArmadaChange();
+    }
+  };
+
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
@@ -34,10 +71,127 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
           <h2 className="text-xl font-bold text-gray-900">Fleet Management</h2>
           <p className="text-sm text-gray-500">Manage buses, maintenance schedules, and assignments.</p>
         </div>
-        <button className="px-4 py-2 bg-black text-white rounded-xl font-bold text-sm hover:bg-gray-800 transition-all flex items-center gap-2">
-          <Bus size={18} /> Add New Armada
+        <button
+          onClick={() => setIsCreating(true)}
+          className="px-4 py-2 bg-black text-white rounded-xl font-bold text-sm hover:bg-gray-800 transition-all flex items-center gap-2"
+        >
+          <Plus size={18} /> Add New Armada
         </button>
       </div>
+
+      {/* Add New Armada Modal */}
+      {isCreating && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-lg p-6 shadow-2xl animate-fade-in-up">
+            <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+              <Bus size={20} className="text-indigo-600" /> Add New Armada
+            </h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1 tracking-widest">Bus Name</label>
+                <input
+                  required
+                  className="w-full rounded-xl border-gray-200 focus:ring-black focus:border-black"
+                  placeholder="e.g., Harapan Jaya Express"
+                  value={form.name}
+                  onChange={e => setForm({ ...form, name: e.target.value })}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1 tracking-widest">Capacity</label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    className="w-full rounded-xl border-gray-200 focus:ring-black focus:border-black"
+                    value={form.capacity}
+                    onChange={e => setForm({ ...form, capacity: parseInt(e.target.value) })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1 tracking-widest">Price/KM (IDR)</label>
+                  <input
+                    type="number"
+                    required
+                    min="0"
+                    className="w-full rounded-xl border-gray-200 focus:ring-black focus:border-black"
+                    value={form.price_per_km}
+                    onChange={e => setForm({ ...form, price_per_km: parseInt(e.target.value) })}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1 tracking-widest">Level/Class</label>
+                  <select
+                    className="w-full rounded-xl border-gray-200 focus:ring-black focus:border-black"
+                    value={form.level}
+                    onChange={e => setForm({ ...form, level: e.target.value })}
+                  >
+                    <option value="Economy">Economy</option>
+                    <option value="Business">Business</option>
+                    <option value="Executive">Executive</option>
+                    <option value="VIP">VIP</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1 tracking-widest">License Plate</label>
+                  <input
+                    required
+                    className="w-full rounded-xl border-gray-200 focus:ring-black focus:border-black font-mono"
+                    placeholder="B 1234 XYZ"
+                    value={form.license_plate}
+                    onChange={e => setForm({ ...form, license_plate: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1 tracking-widest">Initial Status</label>
+                  <select
+                    className="w-full rounded-xl border-gray-200 focus:ring-black focus:border-black"
+                    value={form.status}
+                    onChange={e => setForm({ ...form, status: e.target.value })}
+                  >
+                    <option value="available">Available</option>
+                    <option value="on_duty">On Duty</option>
+                    <option value="maintenance">Maintenance</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1 tracking-widest">Image Filename</label>
+                  <input
+                    className="w-full rounded-xl border-gray-200 focus:ring-black focus:border-black text-sm"
+                    placeholder="bus1.jpg (optional)"
+                    value={form.image_path}
+                    onChange={e => setForm({ ...form, image_path: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setIsCreating(false)}
+                  className="flex-1 py-3 bg-gray-100 rounded-xl font-bold text-gray-600 hover:bg-gray-200 transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-3 bg-black text-white rounded-xl font-bold hover:bg-gray-800 shadow-lg shadow-gray-200 transition-all flex items-center justify-center gap-2"
+                >
+                  <Bus size={16} /> Add Armada
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         {armadas.map(armada => {
@@ -118,3 +272,4 @@ export default function FleetTab({ armadas, onArmadaChange, onStatusChange }) {
     </div>
   );
 }
+

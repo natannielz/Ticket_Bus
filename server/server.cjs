@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
 const bodyParser = require('body-parser');
 const path = require('path');
 const db = require('./database.cjs');
@@ -7,18 +9,119 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const SECRET_KEY = "supersecretkey_dev_only"; // Hardcoded for dev reliability in this environment
+app.use(cors());
+app.use(bodyParser.json());
+const httpServer = createServer(app);
 
 // Initialize gRPC Server
 const grpcServer = require('./grpc_server.cjs');
 grpcServer.startServer();
 
-app.use(cors());
-app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, '../public'))); // Serve public assets like images
+// Initialize gRPC Client
+const grpc = require('@grpc/grpc-js');
+const protoLoader = require('@grpc/proto-loader');
+const PROTO_PATH = path.join(__dirname, 'proto', 'bus.proto');
+const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
+  keepCase: true, longs: String, enums: String, defaults: true, oneofs: true
+});
+const busProto = grpc.loadPackageDefinition(packageDefinition).bus_system;
+const bookingClient = new busProto.BookingService('localhost:50051', grpc.credentials.createInsecure());
+
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+const PORT = process.env.PORT || 3000;
+const SECRET_KEY = "supersecretkey_dev_only"; // Hardcoded for dev reliability in this environment
+
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (token == null) return res.status(401).json({ error: "Unauthorized" });
+
+  jwt.verify(token, SECRET_KEY, (err, user) => {
+    if (err) return res.status(403).json({ error: "Forbidden: Invalid Token" });
+    req.user = user;
+    next();
+  });
+};
+
+
+
+// Socket.io Real-Time Chat
+io.on('connection', (socket) => {
+  console.log('User connected to Socket.io:', socket.id);
+
+  socket.on('join', ({ userId, role }) => {
+    socket.join(role === 'admin' ? 'admin_room' : userId);
+    console.log(`User ${userId} (${role}) joined chat`);
+  });
+
+  socket.on('send_message', (msg) => {
+    // msg: { sender_id, sender_name, receiver_id, content, is_admin }
+    const { sender_id, sender_name, receiver_id, content, is_admin } = msg;
+
+    // Persist to DB
+    db.run("INSERT INTO chat_messages (sender_id, sender_name, receiver_id, content, is_admin) VALUES (?, ?, ?, ?, ?)",
+      [sender_id, sender_name, receiver_id, content, is_admin ? 1 : 0],
+      function (err) {
+        if (err) return console.error("Chat storage error:", err);
+
+        const fullMsg = {
+          id: this.lastID,
+          ...msg,
+          created_at: new Date().toISOString()
+        };
+
+        // If from User to Admin
+        if (receiver_id === 'admin') {
+          io.to('admin_room').emit('receive_message', fullMsg);
+        } else {
+          // If from Admin to User
+          io.to(receiver_id).emit('receive_message', fullMsg);
+          // Also echo to all admins so they see the reply in their UI
+          io.to('admin_room').emit('receive_message', fullMsg);
+        }
+      }
+    );
+  });
+
+  socket.on('disconnect', () => {
+    console.log('User disconnected from Socket.io');
+  });
+});
 
 // API Routes
+app.get('/api/chat/history/:userId', authenticateToken, (req, res) => {
+  const { userId } = req.params;
+  const is_admin = req.user.role === 'admin';
+
+  // If admin, they see all messages for that user. If user, they see their own.
+  const query = "SELECT * FROM chat_messages WHERE (sender_id = ? OR receiver_id = ?) ORDER BY created_at ASC";
+  db.all(query, [userId, userId], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ data: rows });
+  });
+});
+
+// Admin: Get Active Conversations
+app.get('/api/admin/chat/conversations', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden" });
+
+  const query = `
+    SELECT sender_id, sender_name, MAX(created_at) as last_msg_time, content as last_msg
+    FROM chat_messages 
+    WHERE is_admin = 0
+    GROUP BY sender_id
+    ORDER BY last_msg_time DESC
+  `;
+  db.all(query, (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ data: rows });
+  });
+});
 
 // Get Armadas
 app.get('/api/armadas', (req, res) => {
@@ -62,32 +165,63 @@ app.post('/api/register', (req, res) => {
 });
 
 // Bookings (Protected)
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  if (token == null) return res.sendStatus(401);
 
-  jwt.verify(token, SECRET_KEY, (err, user) => {
-    if (err) return res.sendStatus(403);
-    req.user = user;
-    next();
-  });
-};
 
 app.post('/api/bookings', authenticateToken, (req, res) => {
-  const { armada_id, date, seats, total_price } = req.body;
-  db.run("INSERT INTO bookings (user_id, armada_id, date, seats, total_price) VALUES (?, ?, ?, ?, ?)",
-    [req.user.id, armada_id, date, seats, total_price], function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ message: "Booking success", id: this.lastID });
+  const { schedule_id, date, seats, passenger_name } = req.body;
+
+  if (!schedule_id) return res.status(400).json({ error: "schedule_id required" });
+
+  // 1. First validate capacity via Express/DB (Quick check)
+  db.get(`
+    SELECT s.*, a.capacity, (SELECT SUM(seats) FROM bookings WHERE schedule_id = s.id AND date = ?) as booked_seats
+    FROM schedules s
+    JOIN armadas a ON s.armada_id = a.id
+    WHERE s.id = ?
+  `, [date, schedule_id], (err, schedule) => {
+    if (err || !schedule) return res.status(404).json({ error: "Schedule not found" });
+
+    const availableSeats = schedule.capacity - (schedule.booked_seats || 0);
+    if (seats > availableSeats) {
+      return res.status(400).json({ error: "Not enough capacity", available: availableSeats });
+    }
+
+    const totalPrice = schedule.price * seats;
+
+    // 2. Offload creation to gRPC Service
+    const request = {
+      user_id: req.user.id.toString(),
+      armada_id: schedule.armada_id.toString(),
+      date: date,
+      seats: Array.from({ length: seats }, (_, i) => `Auto-${i + 1}`), // Simplified seat selection for gRPC demo
+      total_price: totalPrice
+    };
+
+    bookingClient.CreateBooking(request, (err, response) => {
+      if (err || !response.success) {
+        return res.status(500).json({ error: response?.error_message || "gRPC Service Error" });
+      }
+
+      // Update our local DB with passenger name (since gRPC proto might be generic)
+      db.run("UPDATE bookings SET passenger_name = ?, schedule_id = ? WHERE id = ?",
+        [passenger_name, schedule_id, response.booking_id]);
+
+      res.json({
+        message: "Booking success (via gRPC Service)",
+        id: response.booking_id,
+        totalPrice
+      });
     });
+  });
 });
 
 app.get('/api/bookings', authenticateToken, (req, res) => {
   const query = `
-        SELECT bookings.*, armadas.name as armada_name, armadas.image_path as armada_image
+        SELECT bookings.*, armadas.name as armada_name, armadas.image_path as armada_image, r.name as route_name
         FROM bookings 
         LEFT JOIN armadas ON bookings.armada_id = armadas.id
+        LEFT JOIN schedules s ON bookings.schedule_id = s.id
+        LEFT JOIN routes r ON s.route_id = r.id
         WHERE bookings.user_id = ?
     `;
   db.all(query, [req.user.id], (err, rows) => {
@@ -98,85 +232,110 @@ app.get('/api/bookings', authenticateToken, (req, res) => {
 
 // Admin Dashboard
 app.get('/api/admin/dashboard', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
 
   const stats = {};
 
-  // 1. Basic Stats
-  db.get("SELECT COUNT(*) as count FROM armadas", (err, row) => {
-    stats.totalArmadas = row.count || 0;
-    db.get("SELECT COUNT(*) as count FROM bookings", (err, row) => {
-      stats.totalBookings = row.count || 0;
-      db.get("SELECT COUNT(*) as count FROM users", (err, row) => {
-        stats.totalUsers = row.count || 0;
-        db.get("SELECT SUM(total_price) as total FROM bookings", (err, row) => {
-          stats.totalRevenue = row.total || 0;
+  db.serialize(() => {
+    // 1. Basic Stats (Armadas)
+    db.get("SELECT COUNT(*) as count FROM armadas", (err, row) => {
+      stats.totalArmadas = row.count || 0;
 
-          // 2. Revenue Trend (Last 7 Days)
-          db.all(`SELECT date, SUM(total_price) as revenue FROM bookings 
-                  GROUP BY date 
-                  ORDER BY date DESC LIMIT 7`, (err, rows) => {
-            const revData = (rows || []).reverse().map(r => ({ name: r.date, revenue: r.revenue }));
+      // 2. Bookings
+      db.get("SELECT COUNT(*) as count FROM bookings", (err, row) => {
+        stats.totalBookings = row.count || 0;
 
-            // 3. Occupancy Data
-            db.get("SELECT SUM(capacity) as total_seats FROM armadas", (err, row) => {
-              const totalSeats = row.total_seats || 100; // avoid div by 0
-              db.get("SELECT SUM(seats) as booked_seats FROM bookings WHERE status != 'cancelled'", (err, row) => {
-                const bookedSeats = row.booked_seats || 0;
-                const occupancyData = [
-                  { name: 'Occupied', value: bookedSeats },
-                  { name: 'Available', value: Math.max(0, totalSeats - bookedSeats) }
-                ];
+        // 3. Users
+        db.get("SELECT COUNT(*) as count FROM users", (err, row) => {
+          stats.totalUsers = row.count || 0;
 
-                // 4. Upcoming Departures (Operational)
-                // Fetch Schedules and mock time sorting for demo purposes (real would need complex day/time check)
-                const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-                const todayName = dayNames[new Date().getDay()];
+          // 4. Revenue
+          db.get("SELECT SUM(total_price) as total FROM bookings", (err, row) => {
+            stats.totalRevenue = row.total || 0;
 
-                const opQuery = `
-                        SELECT s.*, a.name as bus, a.license_plate as plate, r.name as route
-                        FROM schedules s
-                        LEFT JOIN armadas a ON s.armada_id = a.id
-                        LEFT JOIN routes r ON s.route_id = r.id
-                        WHERE s.days LIKE ?
-                        LIMIT 5
-                     `;
+            // 5. Active Buses
+            db.get("SELECT COUNT(*) as active FROM armadas WHERE status IN ('available', 'on_duty')", (err, row) => {
+              stats.activeBuses = row.active || 0;
 
-                db.all(opQuery, [`%${todayName}%`], (err, opRows) => {
-                  const upcomingDepartures = (opRows || []).map(r => ({
-                    id: r.id,
-                    bus: r.bus,
-                    plate: r.plate || 'N/A',
-                    time: r.departure_time,
-                    driver_status: 'Ready', // Mocked for now
-                    route: r.route
-                  }));
+              // 6. On Duty Crews
+              db.get("SELECT COUNT(*) as onDuty FROM crews WHERE status IN ('Active', 'On-trip')", (err, row) => {
+                stats.onDutyCrews = row.onDuty || 0;
 
-                  // 5. Recent Transactions
-                  const transQuery = `
-                            SELECT bookings.*, users.name as user_name, armadas.name as armada_name 
-                            FROM bookings 
-                            LEFT JOIN users ON bookings.user_id = users.id
-                            LEFT JOIN armadas ON bookings.armada_id = armadas.id
-                            ORDER BY bookings.id DESC LIMIT 10
-                         `;
+                // 7. Today Schedules
+                db.get("SELECT COUNT(*) as todayCount FROM schedules WHERE is_live = 1", (err, row) => {
+                  stats.todaySchedules = row.todayCount || 0;
 
-                  db.all(transQuery, (err, transRows) => {
-                    const formattedRows = transRows.map(r => ({
-                      ...r,
-                      user: { name: r.user_name },
-                      armada: { name: r.armada_name }
-                    }));
+                  // 8. Revenue Trend (Last 7 Days)
+                  db.all(`SELECT date, SUM(total_price) as revenue FROM bookings 
+                          GROUP BY date 
+                          ORDER BY date DESC LIMIT 7`, (err, rows) => {
+                    const revData = (rows || []).reverse().map(r => ({ name: r.date, revenue: r.revenue }));
 
-                    res.json({
-                      totalArmadas: stats.totalArmadas,
-                      totalBookings: stats.totalBookings,
-                      totalUsers: stats.totalUsers,
-                      totalRevenue: stats.totalRevenue,
-                      bookings: formattedRows,
-                      revenueData: revData,
-                      occupancyData: occupancyData,
-                      upcomingDepartures: upcomingDepartures
+                    // 9. Occupancy Data
+                    db.get("SELECT SUM(capacity) as total_seats FROM armadas", (err, row) => {
+                      const totalSeats = row.total_seats || 100; // avoid div by 0
+                      db.get("SELECT SUM(seats) as booked_seats FROM bookings WHERE status != 'cancelled'", (err, row) => {
+                        const bookedSeats = row.booked_seats || 0;
+                        const occupancyData = [
+                          { name: 'Occupied', value: bookedSeats },
+                          { name: 'Available', value: Math.max(0, totalSeats - bookedSeats) }
+                        ];
+
+                        // 10. Upcoming Departures
+                        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                        const todayName = dayNames[new Date().getDay()];
+
+                        const upcomingQuery = `
+                            SELECT s.*, a.name as bus, a.license_plate as plate, r.name as route
+                            FROM schedules s
+                            JOIN routes r ON s.route_id = r.id
+                            JOIN armadas a ON s.armada_id = a.id
+                            WHERE s.days LIKE ? AND s.is_live = 1
+                            LIMIT 5
+                        `;
+
+                        db.all(upcomingQuery, [`%${todayName}%`], (err, upRows) => {
+                          const upcomingDepartures = (upRows || []).map(r => ({
+                            id: r.id,
+                            bus: r.bus,
+                            plate: r.plate || 'N/A',
+                            time: r.departure_time,
+                            driver_status: 'Ready', // Mocked
+                            route: r.route
+                          }));
+
+                          // 11. Recent Transactions
+                          const transQuery = `
+                              SELECT bookings.*, users.name as user_name, armadas.name as armada_name 
+                              FROM bookings 
+                              LEFT JOIN users ON bookings.user_id = users.id
+                              LEFT JOIN armadas ON bookings.armada_id = armadas.id
+                              ORDER BY bookings.id DESC LIMIT 10
+                          `;
+
+                          db.all(transQuery, (err, transRows) => {
+                            const formattedRows = (transRows || []).map(r => ({
+                              ...r,
+                              user: { name: r.user_name },
+                              armada: { name: r.armada_name }
+                            }));
+
+                            res.json({
+                              totalArmadas: stats.totalArmadas,
+                              totalBookings: stats.totalBookings,
+                              totalUsers: stats.totalUsers,
+                              activeBuses: stats.activeBuses,
+                              onDutyCrews: stats.onDutyCrews,
+                              todaySchedules: stats.todaySchedules,
+                              totalRevenue: stats.totalRevenue,
+                              bookings: formattedRows,
+                              revenueData: revData,
+                              occupancyData: occupancyData,
+                              upcomingDepartures: upcomingDepartures
+                            });
+                          });
+                        });
+                      });
                     });
                   });
                 });
@@ -188,10 +347,9 @@ app.get('/api/admin/dashboard', authenticateToken, (req, res) => {
     });
   });
 });
-
 // Admin: Get All Crews
 app.get('/api/admin/crews', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   const query = `
         SELECT crews.*, armadas.name as bus_name 
         FROM crews 
@@ -206,7 +364,7 @@ app.get('/api/admin/crews', authenticateToken, (req, res) => {
 
 // Admin: Create Crew
 app.post('/api/admin/crews', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   const { name, role, phone, assigned_bus_id } = req.body;
   db.run("INSERT INTO crews (name, role, phone, assigned_bus_id) VALUES (?, ?, ?, ?)",
     [name, role, phone, assigned_bus_id], function (err) {
@@ -217,7 +375,7 @@ app.post('/api/admin/crews', authenticateToken, (req, res) => {
 
 // Admin: Delete Crew
 app.delete('/api/admin/crews/:id', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   db.run("DELETE FROM crews WHERE id = ?", [req.params.id], function (err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ message: "Crew deleted" });
@@ -226,7 +384,7 @@ app.delete('/api/admin/crews/:id', authenticateToken, (req, res) => {
 
 // Admin: Booking Check-in
 app.post('/api/admin/bookings/checkin/:id', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   db.run("UPDATE bookings SET check_in_status = 'checked_in' WHERE id = ?", [req.params.id], function (err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ message: "Passenger checked in" });
@@ -235,7 +393,7 @@ app.post('/api/admin/bookings/checkin/:id', authenticateToken, (req, res) => {
 
 // Admin: Booking No-show
 app.post('/api/admin/bookings/noshow/:id', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   db.run("UPDATE bookings SET check_in_status = 'no_show' WHERE id = ?", [req.params.id], function (err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ message: "Passenger marked as no-show" });
@@ -244,7 +402,7 @@ app.post('/api/admin/bookings/noshow/:id', authenticateToken, (req, res) => {
 
 // Admin: Get All Bookings
 app.get('/api/admin/bookings', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   // Prefer passenger_name (manual) over users.name (registered)
   const query = `
         SELECT bookings.*, 
@@ -263,25 +421,28 @@ app.get('/api/admin/bookings', authenticateToken, (req, res) => {
 
 // Admin: Manual Booking Creation
 app.post('/api/admin/bookings/manual', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
-  const { user_name, date, armada_id, seats, total_price } = req.body;
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
+  const { user_name, date, schedule_id, seats, total_price } = req.body;
 
-  // seat_numbers stored as JSON string or comma separated
-  const seatStr = Array.isArray(seats) ? seats.join(',') : seats;
+  db.get("SELECT armada_id FROM schedules WHERE id = ?", [schedule_id], (err, schedule) => {
+    if (err || !schedule) return res.status(404).json({ error: "Schedule not found" });
 
-  db.run("INSERT INTO bookings (passenger_name, date, armada_id, seat_numbers, seats, total_price, status, check_in_status) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', 'pending')",
-    [user_name, date, armada_id, seatStr, seats.length, total_price],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ message: "Manual Booking Created", id: this.lastID });
-    }
-  );
+    const seatStr = Array.isArray(seats) ? seats.join(',') : seats;
+
+    db.run("INSERT INTO bookings (passenger_name, date, armada_id, schedule_id, seat_numbers, seats, total_price, status, check_in_status) VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed', 'pending')",
+      [user_name, date, schedule.armada_id, schedule_id, seatStr, seats.length, total_price],
+      function (err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "Manual Booking Created", id: this.lastID });
+      }
+    );
+  });
 });
 
 // Admin: Get All Armadas (Already exists as /api/armadas public, but maybe we want a dedicated one or just reuse)
 // Admin: Create Armada
 app.post('/api/admin/armadas', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   const { name, level, price_per_km, route, amenities, seat_config, history, image_path, capacity, status } = req.body;
   db.run(`INSERT INTO armadas (name, level, price_per_km, route, amenities, seat_config, history, image_path, capacity, status) 
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -294,7 +455,7 @@ app.post('/api/admin/armadas', authenticateToken, (req, res) => {
 
 // Admin: Delete Armada
 app.delete('/api/admin/armadas/:id', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   db.run("DELETE FROM armadas WHERE id = ?", [req.params.id], function (err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ message: "Armada deleted" });
@@ -303,8 +464,8 @@ app.delete('/api/admin/armadas/:id', authenticateToken, (req, res) => {
 
 // Admin: Get All Users
 app.get('/api/admin/users', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
-  db.all("SELECT id, name, email, role, created_at FROM users", (err, rows) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
+  db.all("SELECT id, name, email, role, status, created_at FROM users", (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ data: rows });
   });
@@ -312,7 +473,7 @@ app.get('/api/admin/users', authenticateToken, (req, res) => {
 
 // Operations Command Center: Master Data
 app.get('/api/admin/operations/master-data', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
 
   const data = {};
 
@@ -356,7 +517,7 @@ app.get('/api/admin/operations/master-data', authenticateToken, (req, res) => {
 
 // Admin: Update Armada Status (with Integrity Check)
 app.put('/api/admin/armadas/:id/status', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   const { status } = req.body;
   const armadaId = req.params.id;
 
@@ -370,15 +531,15 @@ app.put('/api/admin/armadas/:id/status', authenticateToken, (req, res) => {
         return res.status(500).json({ error: err.message });
       }
 
-      // Integrity Check: If maintenance, flag schedules
+      // Integrity Check: If maintenance, flag schedules and deactivate
       if (status === 'maintenance') {
-        db.run("UPDATE schedules SET needs_reassignment = 1 WHERE armada_id = ?", [armadaId], (err) => {
+        db.run("UPDATE schedules SET needs_reassignment = 1, is_live = 0 WHERE armada_id = ?", [armadaId], (err) => {
           if (err) {
             db.run("ROLLBACK");
             return res.status(500).json({ error: err.message });
           }
           db.run("COMMIT");
-          res.json({ message: "Armada updated and schedules flagged" });
+          res.json({ message: "Armada in maintenance. Schedules deactivated and flagged." });
         });
       } else {
         db.run("COMMIT");
@@ -390,7 +551,7 @@ app.put('/api/admin/armadas/:id/status', authenticateToken, (req, res) => {
 
 // Admin: Toggle Schedule Live Status
 app.put('/api/admin/schedules/:id/toggle-live', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   const scheduleId = req.params.id;
 
   db.get("SELECT is_live FROM schedules WHERE id = ?", [scheduleId], (err, row) => {
@@ -407,7 +568,7 @@ app.put('/api/admin/schedules/:id/toggle-live', authenticateToken, (req, res) =>
 
 // Routes APIs
 app.get('/api/admin/routes', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   db.all("SELECT * FROM routes ORDER BY id DESC", (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ data: rows });
@@ -415,14 +576,14 @@ app.get('/api/admin/routes', authenticateToken, (req, res) => {
 });
 
 app.post('/api/admin/routes', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
-  const { name, description, duration, color, origin, destination, coordinates, stops } = req.body;
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
+  const { name, description, duration, color, origin, destination, coordinates, distanceKm, stops } = req.body;
 
   db.serialize(() => {
     db.run("BEGIN TRANSACTION");
 
-    db.run("INSERT INTO routes (name, description, duration, color, origin, destination, coordinates) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [name, description, duration, color, origin, destination, JSON.stringify(coordinates)],
+    db.run("INSERT INTO routes (name, description, duration, color, origin, destination, coordinates, distanceKm) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [name, description, duration, color, origin, destination, JSON.stringify(coordinates), distanceKm],
       function (err) {
         if (err) {
           db.run("ROLLBACK");
@@ -453,7 +614,7 @@ app.get('/api/admin/routes/:id', authenticateToken, (req, res) => {
 
 // Schedules APIs
 app.get('/api/admin/schedules', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   const query = `
         SELECT schedules.*, 
                routes.name as route_name, 
@@ -473,17 +634,80 @@ app.get('/api/admin/schedules', authenticateToken, (req, res) => {
   });
 });
 
+// Admin: Create Schedule (with Conflict Detection & Automated Pricing)
 app.post('/api/admin/schedules', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
   const { route_id, armada_id, days, departure_time, arrival_time, price, price_weekend, driver_id, conductor_id } = req.body;
 
-  db.run("INSERT INTO schedules (route_id, armada_id, days, departure_time, arrival_time, price, price_weekend, driver_id, conductor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [route_id, armada_id, days, departure_time, arrival_time, price, price_weekend || (price * 1.2), driver_id, conductor_id],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ message: "Schedule created", id: this.lastID });
+  // Conflict Detection Helper
+  const checkConflict = () => {
+    return new Promise((resolve, reject) => {
+      const query = `
+        SELECT * FROM schedules 
+        WHERE (armada_id = ? OR driver_id = ? OR conductor_id = ?)
+        AND is_live = 1
+      `;
+      db.all(query, [armada_id, driver_id, conductor_id], (err, rows) => {
+        if (err) return reject(err);
+
+        const newDaysList = days.split(',').map(d => d.trim());
+        const conflict = rows.find(row => {
+          const existingDays = row.days.split(',').map(d => d.trim());
+          return newDaysList.some(day => existingDays.includes(day));
+        });
+
+        resolve(conflict);
+      });
+    });
+  };
+
+  db.serialize(async () => {
+    try {
+      const conflict = await checkConflict();
+      if (conflict) {
+        return res.status(409).json({
+          error: "Resource Allocation Conflict",
+          message: `Resource already assigned to schedule on overlapping days.`,
+          conflict: conflict
+        });
+      }
+
+      // Automated Pricing Engine
+      let finalPrice = price;
+      let finalPriceWeekend = price_weekend;
+
+      if (!finalPrice) {
+        const route = await new Promise(r => db.get("SELECT distanceKm FROM routes WHERE id = ?", [route_id], (err, row) => r(row)));
+        const armada = await new Promise(r => db.get("SELECT price_per_km FROM armadas WHERE id = ?", [armada_id], (err, row) => r(row)));
+
+        if (route && armada && route.distanceKm) {
+          finalPrice = Math.round(route.distanceKm * armada.price_per_km);
+          finalPriceWeekend = Math.round(finalPrice * 1.2);
+        }
+      }
+
+      db.run("INSERT INTO schedules (route_id, armada_id, days, departure_time, arrival_time, price, price_weekend, driver_id, conductor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [route_id, armada_id, days, departure_time, arrival_time, finalPrice, finalPriceWeekend || (finalPrice * 1.2), driver_id, conductor_id],
+        function (err) {
+          if (err) return res.status(500).json({ error: err.message });
+          res.json({ message: "Schedule created successfully", id: this.lastID, price: finalPrice });
+        }
+      );
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
-  );
+  });
+});
+
+// Admin: Delete Schedule
+app.delete('/api/admin/schedules/:id', authenticateToken, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
+  const scheduleId = req.params.id;
+  db.run("DELETE FROM schedules WHERE id = ?", [scheduleId], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    if (this.changes === 0) return res.status(404).json({ error: "Schedule not found" });
+    res.json({ message: "Schedule deleted successfully" });
+  });
 });
 
 // Public: Get Schedules with Dynamic Pricing
@@ -501,7 +725,7 @@ app.get('/api/schedules', (req, res) => {
         FROM schedules s
         JOIN routes r ON s.route_id = r.id
         JOIN armadas a ON s.armada_id = a.id
-        WHERE 1=1 AND s.is_live = 1 
+        WHERE 1=1 AND s.is_live = 1 AND a.status != 'maintenance'
         ${from ? "AND r.origin LIKE ?" : ""}
         ${to ? "AND r.destination LIKE ?" : ""}
     `;
@@ -544,7 +768,7 @@ const axios = require('axios'); // Ensure axios is required
 // ... previous code ...
 
 app.post('/api/admin/calculate-route', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.sendStatus(403);
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Forbidden: Admin Access Required" });
 
   // Expects: origin: {lat, lng}, destination: {lat, lng}, waypoints: [{lat, lng}]
   const { origin, destination, waypoints } = req.body;
@@ -579,6 +803,6 @@ app.post('/api/admin/calculate-route', authenticateToken, (req, res) => {
     });
 });
 
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

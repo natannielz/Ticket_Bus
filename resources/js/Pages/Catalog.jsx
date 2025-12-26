@@ -9,7 +9,7 @@ export default function Catalog() {
 
   // Booking Form State
   const [formData, setFormData] = useState({
-    armada_id: '',
+    schedule_id: '',
     date: '',
     seats: 1
   });
@@ -23,12 +23,10 @@ export default function Catalog() {
         if (result.data) {
           const transformed = result.data.map(d => ({
             ...d,
-            id: d.armada_id, // Keep for legacy booking logic compatibility
-            schedule_id: d.id,
             title: d.armada_name,
             level: d.armada_level,
             price: d.price,
-            image: d.armada_image ? `/images/armadas/${d.armada_image}` : 'https://via.placeholder.com/800x600?text=No+Image',
+            image: d.armada_image ? `/images/armadas/${d.armada_image}` : null,
             route: d.route_name,
             date: `Keberangkatan: ${d.departure_time}`,
             seat_config: d.seat_config,
@@ -44,12 +42,12 @@ export default function Catalog() {
 
   const openDrawer = (event) => {
     setSelectedEvent(event);
-    setFormData(prev => ({ ...prev, armada_id: event.id }));
+    setFormData(prev => ({ ...prev, schedule_id: event.id }));
   };
 
   const closeDrawer = () => {
     setSelectedEvent(null);
-    setFormData({ armada_id: '', date: '', seats: 1 });
+    setFormData({ schedule_id: '', date: '', seats: 1 });
   };
 
   const submitBooking = async (e) => {
@@ -71,8 +69,9 @@ export default function Catalog() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          ...formData,
-          total_price: selectedEvent.price_per_km * formData.seats
+          schedule_id: formData.schedule_id,
+          date: formData.date,
+          seats: formData.seats
         })
       });
 
@@ -91,7 +90,7 @@ export default function Catalog() {
     }
   };
 
-  const totalPrice = selectedEvent ? (selectedEvent.price_per_km * formData.seats) : 0;
+  const totalPrice = selectedEvent ? (selectedEvent.price * formData.seats) : 0;
 
   return (
     <GuestLayout>
@@ -118,11 +117,24 @@ export default function Catalog() {
                   <div className="absolute top-4 right-4 z-10 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-gray-900 shadow-sm uppercase tracking-wide">
                     {event.level}
                   </div>
-                  <img
-                    className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
-                    src={event.image}
-                    alt={event.title}
-                  />
+                  {event.image ? (
+                    <img
+                      className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
+                      src={event.image}
+                      alt={event.title}
+                      onError={(e) => {
+                        e.target.onerror = null;
+                        e.target.style.display = 'none';
+                        e.target.parentNode.classList.add('bg-gray-200');
+                        // Create a text node or sibling for "No Image" if desired, 
+                        // but strictly hiding it and showing background is cleaner.
+                      }}
+                    />
+                  ) : (
+                    <div className="h-full w-full bg-gray-200 flex items-center justify-center">
+                      <span className="text-gray-400 font-bold text-xs uppercase">No Image</span>
+                    </div>
+                  )}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-end">
                     <p className="p-6 text-white font-medium">Lihat Detail &rarr;</p>
                   </div>

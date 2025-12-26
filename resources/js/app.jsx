@@ -16,6 +16,7 @@ import AdminUsers from './Pages/Admin/Users';
 import AdminRoutes from './Pages/Admin/Routes';
 import AdminCrews from './Pages/Admin/Crews';
 import AdminSupport from './Pages/Admin/SupportInbox';
+import OperationsCenter from './Pages/Admin/OperationsCenter';
 import ChatWidget from './Components/ChatWidget';
 
 function App() {
@@ -35,6 +36,7 @@ function App() {
 
         {/* Admin Routes */}
         <Route path="/admin/dashboard" element={<AdminDashboard />} />
+        <Route path="/admin/operations" element={<OperationsCenter />} />
         <Route path="/admin/bookings" element={<AdminBookings />} />
         <Route path="/admin/fleet" element={<AdminFleet />} />
         <Route path="/admin/users" element={<AdminUsers />} />

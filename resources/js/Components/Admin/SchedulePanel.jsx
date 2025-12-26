@@ -1,11 +1,23 @@
 import React from 'react';
-import { Calendar, Clock, MapPin, Bus, Users, ShieldCheck, ShieldAlert, Zap, ZapOff } from 'lucide-react';
+import { Calendar, Clock, MapPin, Bus, Users, ShieldCheck, ShieldAlert, Zap, ZapOff, Trash2 } from 'lucide-react';
 
 export default function SchedulePanel({ schedules, onToggleLive, onRefresh }) {
   const handleToggle = async (id) => {
     const token = localStorage.getItem('token');
     const res = await fetch(`/api/admin/schedules/${id}/toggle-live`, {
       method: 'PUT',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (res.ok) {
+      onRefresh();
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm("Are you sure you want to delete this schedule? This action cannot be undone.")) return;
+    const token = localStorage.getItem('token');
+    const res = await fetch(`/api/admin/schedules/${id}`, {
+      method: 'DELETE',
       headers: { 'Authorization': `Bearer ${token}` }
     });
     if (res.ok) {
@@ -105,8 +117,11 @@ export default function SchedulePanel({ schedules, onToggleLive, onRefresh }) {
                     {isLive ? 'Live' : 'Draft'}
                   </button>
 
-                  <button className="p-3 text-gray-400 hover:text-black transition-colors rounded-xl hover:bg-white text-xs font-bold uppercase tracking-widest">
-                    Details
+                  <button
+                    onClick={() => handleDelete(schedule.id)}
+                    className="p-3 text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors rounded-xl text-xs font-bold uppercase tracking-widest flex items-center gap-1"
+                  >
+                    <Trash2 size={14} /> Delete
                   </button>
                 </div>
               </div>

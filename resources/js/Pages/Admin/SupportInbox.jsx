@@ -1,55 +1,90 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import AdminLayout from '@/Layouts/AdminLayout';
 import { MessageCircle, Search, User, Clock, Send, CheckCircle } from 'lucide-react';
+import { io } from 'socket.io-client';
 
 export default function SupportInbox() {
   const [activeChat, setActiveChat] = useState(null);
-  const [chats, setChats] = useState([
-    { id: 'u1', name: 'User 123', lastMsg: 'Does the bus have WiFi?', time: '2m', unread: true, status: 'online' },
-    { id: 'u2', name: 'Budi Santoso', lastMsg: 'Can I reschedule?', time: '1h', unread: false, status: 'offline' },
-  ]);
+  const [chats, setChats] = useState([]);
   const [messages, setMessages] = useState([]);
   const [reply, setReply] = useState('');
+  const socketRef = useRef(null);
 
-  // Simulate Receiving "ChatEvent" from gRPC Stream
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const token = localStorage.getItem('token');
+
   useEffect(() => {
-    // const stream = client.StreamChatUpdates(new Empty());
-    // stream.on('data', (update) => { ... handle new msg ... });
+    fetchConversations();
 
-    // Mock incoming every 10s
-    const interval = setInterval(() => {
-      const newMsgCheck = Math.random() > 0.7;
-      if (newMsgCheck) {
-        // Flash badge or update list
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    const socket = io('http://localhost:3000');
+    socketRef.current = socket;
 
-  const openChat = (chat) => {
+    socket.on('connect', () => {
+      socket.emit('join', { userId: user.id, role: user.role });
+    });
+
+    socket.on('receive_message', (msg) => {
+      // If message is for the currently open chat, append it
+      setMessages(prev => {
+        if (activeChat && (msg.sender_id === activeChat.sender_id || msg.receiver_id === activeChat.sender_id)) {
+          return [...prev, { ...msg, isMe: msg.is_admin === 1, time: new Date(msg.created_at).toLocaleTimeString() }];
+        }
+        return prev;
+      });
+      // Refresh conversation list to show latest message/status
+      fetchConversations();
+    });
+
+    return () => socket.disconnect();
+  }, [activeChat]);
+
+  const fetchConversations = async () => {
+    try {
+      const res = await fetch('/api/admin/chat/conversations', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const result = await res.json();
+      if (result.data) setChats(result.data.map(c => ({
+        id: c.sender_id,
+        name: c.sender_name,
+        lastMsg: c.last_msg,
+        time: new Date(c.last_msg_time).toLocaleTimeString(),
+        sender_id: c.sender_id
+      })));
+    } catch (err) { console.error(err); }
+  };
+
+  const openChat = async (chat) => {
     setActiveChat(chat);
-    // Fetch history using gRPC (mocked here)
-    setMessages([
-      { id: 1, sender: chat.name, content: chat.lastMsg, time: chat.time, isMe: false }
-    ]);
-    // Mark read
-    setChats(prev => prev.map(c => c.id === chat.id ? { ...c, unread: false } : c));
+    try {
+      const res = await fetch(`/api/chat/history/${chat.id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const result = await res.json();
+      if (result.data) setMessages(result.data.map(m => ({
+        id: m.id,
+        sender: m.sender_name,
+        content: m.content,
+        time: new Date(m.created_at).toLocaleTimeString(),
+        isMe: m.is_admin === 1
+      })));
+    } catch (err) { console.error(err); }
   };
 
   const sendReply = (e) => {
     e.preventDefault();
-    if (!reply.trim()) return;
+    if (!reply.trim() || !activeChat || !socketRef.current) return;
 
-    setMessages(prev => [...prev, {
-      id: Date.now(),
-      sender: 'You',
+    const msgData = {
+      sender_id: user.id,
+      sender_name: user.name,
+      receiver_id: activeChat.sender_id,
       content: reply,
-      time: 'Just now',
-      isMe: true
-    }]);
-    setReply('');
+      is_admin: true
+    };
 
-    // gRPC: client.sendMessage(...)
+    socketRef.current.emit('send_message', msgData);
+    setReply('');
   };
 
   return (
@@ -113,8 +148,8 @@ export default function SupportInbox() {
                 {messages.map(msg => (
                   <div key={msg.id} className={`flex ${msg.isMe ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[70%] rounded-2xl p-4 text-sm shadow-sm ${msg.isMe
-                        ? 'bg-black text-white rounded-tr-none'
-                        : 'bg-white text-gray-800 rounded-tl-none border border-gray-100'
+                      ? 'bg-black text-white rounded-tr-none'
+                      : 'bg-white text-gray-800 rounded-tl-none border border-gray-100'
                       }`}>
                       <p>{msg.content}</p>
                       <p className={`text-[10px] mt-2 opacity-50 ${msg.isMe ? 'text-right' : ''}`}>{msg.time}</p>

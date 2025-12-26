@@ -22,14 +22,30 @@ export default function Dashboard() {
   useEffect(() => {
     // Fetch dashboard data
     const token = localStorage.getItem('token');
+    if (!token) {
+      window.location.href = '/login';
+      return;
+    }
+
     fetch('/api/admin/dashboard', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(res => {
+        if (res.status === 401 || res.status === 403) {
+          window.location.href = '/login';
+          throw new Error("Unauthorized");
+        }
+        return res.json();
+      })
       .then(data => {
         if (data) {
           setStats({
             ...data,
+            // Safe fallbacks to prevent crashes
+            occupancyData: data.occupancyData || [],
+            revenueData: data.revenueData || [],
+            bookings: data.bookings || [],
+            upcomingDepartures: data.upcomingDepartures || [],
             revenueTrend: 12.5, // Mock for now
             bookingsTrend: -2.4 // Mock for now
           });
@@ -66,56 +82,49 @@ export default function Dashboard() {
             <div className="p-3 bg-blue-50 text-blue-600 rounded-lg">
               <CreditCard size={24} />
             </div>
-            <div className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-full ${stats.revenueTrend >= 0 ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
-              {stats.revenueTrend >= 0 ? <ArrowUp size={12} /> : <ArrowDown size={12} />}
-              {Math.abs(stats.revenueTrend)}%
-            </div>
           </div>
           <div className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Total Revenue</div>
           <div className="text-2xl font-black text-gray-900 mt-1">IDR {parseInt(stats.totalRevenue).toLocaleString('id-ID')}</div>
-          <div className="text-xs text-xs text-gray-400 mt-2">vs last {filter}</div>
+          <div className="text-[10px] text-gray-400 mt-2 uppercase font-bold tracking-widest">Lifetime Earnings</div>
         </div>
 
-        {/* Total Bookings */}
+        {/* Active Buses */}
         <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 group hover:shadow-md transition-all">
           <div className="flex justify-between items-start mb-4">
             <div className="p-3 bg-indigo-50 text-indigo-600 rounded-lg">
-              <Activity size={24} />
-            </div>
-            <div className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-full ${stats.bookingsTrend >= 0 ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
-              {stats.bookingsTrend >= 0 ? <ArrowUp size={12} /> : <ArrowDown size={12} />}
-              {Math.abs(stats.bookingsTrend)}%
-            </div>
-          </div>
-          <div className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Total Bookings</div>
-          <div className="text-2xl font-black text-gray-900 mt-1">{stats.totalBookings}</div>
-          <div className="text-xs text-xs text-gray-400 mt-2">vs last {filter}</div>
-        </div>
-
-        {/* Total Fleet */}
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 group hover:shadow-md transition-all">
-          <div className="flex justify-between items-start mb-4">
-            <div className="p-3 bg-orange-50 text-orange-600 rounded-lg">
               <Bus size={24} />
             </div>
-            <span className="text-xs font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-full">Active</span>
+            <div className="flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-full bg-green-50 text-green-600 uppercase">
+              Operational
+            </div>
           </div>
-          <div className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Operational Fleet</div>
-          <div className="text-2xl font-black text-gray-900 mt-1">{stats.totalArmadas}</div>
-          <div className="text-xs text-xs text-gray-400 mt-2">Armadas ready</div>
+          <div className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Active Buses</div>
+          <div className="text-2xl font-black text-gray-900 mt-1">{stats.activeBuses || 0} <span className="text-sm font-normal text-gray-400">/ {stats.totalArmadas}</span></div>
+          <div className="text-[10px] text-gray-400 mt-2 uppercase font-bold tracking-widest">Available & On-Trip</div>
         </div>
 
-        {/* Total Users */}
+        {/* On-Duty Crews */}
+        <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 group hover:shadow-md transition-all">
+          <div className="flex justify-between items-start mb-4">
+            <div className="p-3 bg-amber-50 text-amber-600 rounded-lg">
+              <Users size={24} />
+            </div>
+          </div>
+          <div className="text-gray-500 text-xs font-semibold uppercase tracking-wider">On-Duty Crews</div>
+          <div className="text-2xl font-black text-gray-900 mt-1">{stats.onDutyCrews || 0}</div>
+          <div className="text-[10px] text-gray-400 mt-2 uppercase font-bold tracking-widest">Active Personnel</div>
+        </div>
+
+        {/* Today's Schedules */}
         <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 group hover:shadow-md transition-all">
           <div className="flex justify-between items-start mb-4">
             <div className="p-3 bg-emerald-50 text-emerald-600 rounded-lg">
-              <Users size={24} />
+              <Clock size={24} />
             </div>
-            <span className="text-xs font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-full">Global</span>
           </div>
-          <div className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Total Users</div>
-          <div className="text-2xl font-black text-gray-900 mt-1">{stats.totalUsers}</div>
-          <div className="text-xs text-xs text-gray-400 mt-2">Registered Accounts</div>
+          <div className="text-gray-500 text-xs font-semibold uppercase tracking-wider">Today's Schedules</div>
+          <div className="text-2xl font-black text-gray-900 mt-1">{stats.todaySchedules || 0}</div>
+          <div className="text-[10px] text-gray-400 mt-2 uppercase font-bold tracking-widest">Live Deployments</div>
         </div>
       </div>
 
@@ -125,7 +134,7 @@ export default function Dashboard() {
           <h3 className="text-lg font-bold text-gray-900 mb-6 flex items-center gap-2">
             <Activity size={20} className="text-gray-400" /> Revenue Trend
           </h3>
-          <div className="h-64 w-full">
+          <div className="w-full" style={{ height: '300px' }}>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={stats.revenueData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
@@ -141,7 +150,7 @@ export default function Dashboard() {
         {/* Occupancy Pie Chart */}
         <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
           <h3 className="text-lg font-bold text-gray-900 mb-6">Fleet Occupancy</h3>
-          <div className="h-48 w-full relative">
+          <div className="w-full relative" style={{ height: '300px' }}>
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
@@ -154,7 +163,7 @@ export default function Dashboard() {
                   paddingAngle={5}
                   dataKey="value"
                 >
-                  {stats.occupancyData.map((entry, index) => (
+                  {stats.occupancyData?.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>

@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents, Tooltip
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
-import { MapPin, Plus, Save, Flag, DollarSign, Calculator, Trash2, ArrowRight } from 'lucide-react';
+import { MapPin, Plus, Save, Flag, DollarSign, Calculator, Trash2, ArrowRight, AlertTriangle } from 'lucide-react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ResourceSidebar from './ResourceSidebar';
 
@@ -98,7 +98,7 @@ function LocationMarker({ points, setPoints, stops, setStops, activeMode, routeP
   );
 }
 
-export default function MapStrategyTab({ armadas, crews, onRefresh }) {
+export default function MapStrategyTab({ armadas, crews, schedules = [], onRefresh }) {
   const [points, setPoints] = useState([]);
   const [routePath, setRoutePath] = useState([]);
   const [stops, setStops] = useState([]);
@@ -126,6 +126,26 @@ export default function MapStrategyTab({ armadas, crews, onRefresh }) {
   const availableArmadas = armadas.filter(a => a.status === 'available');
   const activeDrivers = crews.filter(c => c.status === 'Active' && c.role === 'Driver');
   const activeConductors = crews.filter(c => c.status === 'Active' && c.role === 'Conductor');
+
+  // Conflict Detection Helper - checks if any days overlap
+  const checkDayOverlap = (existingDays, newDays) => {
+    if (!existingDays || !newDays || newDays.length === 0) return false;
+    const existingDayList = existingDays.split(',').map(d => d.trim());
+    return newDays.some(day => existingDayList.includes(day));
+  };
+
+  // Check conflicts for selected resources
+  const driverConflict = form.driver_id && form.days.length > 0
+    ? schedules.find(s => s.driver_id == form.driver_id && checkDayOverlap(s.days, form.days))
+    : null;
+
+  const conductorConflict = form.conductor_id && form.days.length > 0
+    ? schedules.find(s => s.conductor_id == form.conductor_id && checkDayOverlap(s.days, form.days))
+    : null;
+
+  const armadaConflict = form.armada_id && form.days.length > 0
+    ? schedules.find(s => s.armada_id == form.armada_id && checkDayOverlap(s.days, form.days))
+    : null;
 
   // Dynamic Pricing Logic
   useEffect(() => {
@@ -187,6 +207,7 @@ export default function MapStrategyTab({ armadas, crews, onRefresh }) {
       origin: `${points[0].lat.toFixed(6)}, ${points[0].lng.toFixed(6)}`,
       destination: `${points[1].lat.toFixed(6)}, ${points[1].lng.toFixed(6)}`,
       coordinates: routePath.length > 0 ? routePath : points,
+      distanceKm: distanceKm,
       stops: stops
     };
 
@@ -265,28 +286,61 @@ export default function MapStrategyTab({ armadas, crews, onRefresh }) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-gray-400 font-bold mb-1 block uppercase text-[9px]">Driver</label>
-                  <select className="w-full rounded-xl border-gray-100 text-[10px] font-bold py-2" value={form.driver_id} onChange={e => setForm({ ...form, driver_id: e.target.value })}>
+                  <select className={`w-full rounded-xl text-[10px] font-bold py-2 ${driverConflict ? 'border-orange-400 bg-orange-50' : 'border-gray-100'}`} value={form.driver_id} onChange={e => setForm({ ...form, driver_id: e.target.value })}>
                     <option value="">-- Select --</option>
                     {activeDrivers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="text-gray-400 font-bold mb-1 block uppercase text-[9px]">Conductor</label>
-                  <select className="w-full rounded-xl border-gray-100 text-[10px] font-bold py-2" value={form.conductor_id} onChange={e => setForm({ ...form, conductor_id: e.target.value })}>
+                  <select className={`w-full rounded-xl text-[10px] font-bold py-2 ${conductorConflict ? 'border-orange-400 bg-orange-50' : 'border-gray-100'}`} value={form.conductor_id} onChange={e => setForm({ ...form, conductor_id: e.target.value })}>
                     <option value="">-- Select --</option>
                     {activeConductors.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
               </div>
-            </div>
 
-            {estimatedPrice > 0 && (
-              <div className="mt-4 p-4 rounded-2xl bg-green-50 border border-green-100 animate-fade-in">
-                <p className="text-[9px] font-black text-green-700 uppercase tracking-widest mb-1">Suggested Base Price</p>
-                <p className="text-xl font-black text-green-900 leading-none">IDR {estimatedPrice.toLocaleString()}</p>
-                <p className="text-[9px] text-green-600 mt-2 font-bold italic">Based on {distanceKm.toFixed(1)} km trajectory.</p>
-              </div>
-            )}
+              {/* Conflict Alerts */}
+              {(armadaConflict || driverConflict || conductorConflict) && (
+                <div className="mt-3 space-y-2">
+                  {armadaConflict && (
+                    <div className="p-2.5 rounded-xl bg-orange-50 border border-orange-200 flex items-start gap-2">
+                      <AlertTriangle size={14} className="text-orange-600 mt-0.5 flex-shrink-0" />
+                      <div className="text-[10px]">
+                        <p className="font-black text-orange-700 uppercase tracking-widest">Fleet Conflict</p>
+                        <p className="text-orange-600">This bus is already assigned to <span className="font-bold">"{armadaConflict.route_name}"</span> on overlapping days.</p>
+                      </div>
+                    </div>
+                  )}
+                  {driverConflict && (
+                    <div className="p-2.5 rounded-xl bg-orange-50 border border-orange-200 flex items-start gap-2">
+                      <AlertTriangle size={14} className="text-orange-600 mt-0.5 flex-shrink-0" />
+                      <div className="text-[10px]">
+                        <p className="font-black text-orange-700 uppercase tracking-widest">Driver Conflict</p>
+                        <p className="text-orange-600">This driver is assigned to <span className="font-bold">"{driverConflict.route_name}"</span> on overlapping days.</p>
+                      </div>
+                    </div>
+                  )}
+                  {conductorConflict && (
+                    <div className="p-2.5 rounded-xl bg-orange-50 border border-orange-200 flex items-start gap-2">
+                      <AlertTriangle size={14} className="text-orange-600 mt-0.5 flex-shrink-0" />
+                      <div className="text-[10px]">
+                        <p className="font-black text-orange-700 uppercase tracking-widest">Conductor Conflict</p>
+                        <p className="text-orange-600">This conductor is assigned to <span className="font-bold">"{conductorConflict.route_name}"</span> on overlapping days.</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {estimatedPrice > 0 && (
+                <div className="mt-4 p-4 rounded-2xl bg-green-50 border border-green-100 animate-fade-in">
+                  <p className="text-[9px] font-black text-green-700 uppercase tracking-widest mb-1">Suggested Base Price</p>
+                  <p className="text-xl font-black text-green-900 leading-none">IDR {estimatedPrice.toLocaleString()}</p>
+                  <p className="text-[9px] text-green-600 mt-2 font-bold italic">Based on {distanceKm.toFixed(1)} km trajectory.</p>
+                </div>
+              )}
+            </div>
           </section>
 
           <hr className="border-gray-50" />

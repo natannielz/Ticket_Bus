@@ -144,7 +144,12 @@ export default function Home() {
                   <img
                     className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
                     src={event.image_path ? `/images/armadas/${event.image_path}` : `https://images.unsplash.com/photo-${1500000000000 + event.id}?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80`}
-                    onError={(e) => e.target.src = "https://via.placeholder.com/800x600?text=No+Image"}
+                    onError={(e) => {
+                      e.target.onerror = null;
+                      e.target.style.display = 'none';
+                      e.target.parentNode.classList.add('bg-gray-200', 'flex', 'items-center', 'justify-center');
+                      e.target.parentNode.innerHTML = '<span class="text-gray-400 font-bold text-xs uppercase">No Image</span>';
+                    }}
                     alt={event.name}
                   />
                 </div>

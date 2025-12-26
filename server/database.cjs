@@ -26,6 +26,7 @@ function initDb() {
             email TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
             role TEXT DEFAULT 'user',
+            status TEXT DEFAULT 'Active', -- Active, Inactive
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )`, (err) => {
       if (!err) {
@@ -97,13 +98,26 @@ function initDb() {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             armada_id INTEGER,
+            schedule_id INTEGER, -- Link to specific schedule
             date TEXT,
             seats INTEGER,
             total_price INTEGER,
             status TEXT DEFAULT 'pending',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(user_id) REFERENCES users(id),
-            FOREIGN KEY(armada_id) REFERENCES armadas(id)
+            FOREIGN KEY(armada_id) REFERENCES armadas(id),
+            FOREIGN KEY(schedule_id) REFERENCES schedules(id)
+        )`);
+
+    // Chat Messages Table
+    db.run(`CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender_id TEXT,
+            sender_name TEXT,
+            receiver_id TEXT,
+            content TEXT,
+            is_admin INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )`);
 
     // Add Columns to Bookings if not exists (check_in_status, qr_code)
@@ -114,7 +128,11 @@ function initDb() {
     db.run("ALTER TABLE bookings ADD COLUMN check_in_status TEXT DEFAULT 'pending'", (err) => { });
     db.run("ALTER TABLE bookings ADD COLUMN qr_code TEXT", (err) => { });
     db.run("ALTER TABLE bookings ADD COLUMN passenger_name TEXT", (err) => { });
-    db.run("ALTER TABLE bookings ADD COLUMN seat_numbers TEXT", (err) => { }); // JSON or comma separated e.g. "1A,1B"
+    db.run("ALTER TABLE bookings ADD COLUMN seat_numbers TEXT", (err) => { });
+    db.run("ALTER TABLE bookings ADD COLUMN schedule_id INTEGER", (err) => { });
+
+    // Migration for Users Table
+    db.run("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'Active'", (err) => { });
 
     // Crews Table
     db.run(`CREATE TABLE IF NOT EXISTS crews (
@@ -143,9 +161,12 @@ function initDb() {
             color TEXT DEFAULT '#3b82f6',
             origin TEXT NOT NULL,
             destination TEXT NOT NULL,
+            distanceKm REAL,
             coordinates TEXT, -- Actual path geometry (JSON)
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )`);
+
+    db.run("ALTER TABLE routes ADD COLUMN distanceKm REAL", (err) => { });
 
     // Stops Table (New)
     db.run(`CREATE TABLE IF NOT EXISTS stops (

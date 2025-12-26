@@ -40,7 +40,13 @@ export default function BookingList() {
     fetch('/api/admin/bookings', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(res => {
+        if (res.status === 401 || res.status === 403) {
+          window.location.href = '/login';
+          throw new Error("Unauthorized");
+        }
+        return res.json();
+      })
       .then(data => {
         if (data.data) {
           setBookings(data.data);
@@ -92,11 +98,6 @@ export default function BookingList() {
     doc.save("passenger_manifest.pdf");
   };
 
-  const sendWhatsApp = (booking) => {
-    const message = `Hello ${booking.user_name || 'Customer'}, regarding your booking #${booking.id} with ${booking.armada_name} on ${booking.date}. Status: ${booking.status}.`;
-    const url = `https://wa.me/?text=${encodeURIComponent(message)}`;
-    window.open(url, '_blank');
-  };
 
   const getStatusColor = (status) => {
     switch (status?.toLowerCase()) {
@@ -434,13 +435,7 @@ export default function BookingList() {
                             <button onClick={() => handleNoShow(booking.id)} className="p-1.5 text-orange-600 bg-orange-50 hover:bg-orange-100 rounded tooltip" title="Mark No-Show"><UserX size={16} /></button>
                           </>
                         )}
-                        <button
-                          onClick={() => sendWhatsApp(booking)}
-                          className="p-2 text-green-600 hover:bg-green-50 rounded-lg flex items-center gap-1 text-xs font-bold border border-transparent hover:border-green-100"
-                          title="Send WhatsApp"
-                        >
-                          <MessageCircle size={16} /> Chat
-                        </button>
+
                         <button className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg">
                           <MoreHorizontal size={16} />
                         </button>

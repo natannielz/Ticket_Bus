@@ -1,15 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MessageCircle, X, Send, Minus } from 'lucide-react';
+import { io } from 'socket.io-client';
 
-// Mocking gRPC Client import (In real implementation, this comes from protoc-gen-grpc-web)
-// import { ChatServiceClient } from '@/services/proto/Bus_systemServiceClientPb';
-// import { ChatMessage, UserIdentity } from '@/services/proto/bus_system_pb';
-
-export default function ChatWidget({ userId = 'guest-001', userName = 'Guest' }) {
+export default function ChatWidget() {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
+  const socketRef = useRef(null);
+
+  // Get user from local storage
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const token = localStorage.getItem('token');
 
   // Auto-scroll ref
   const messagesEndRef = useRef(null);
@@ -18,65 +20,67 @@ export default function ChatWidget({ userId = 'guest-001', userName = 'Guest' })
   };
   useEffect(scrollToBottom, [messages]);
 
-  // Simulate gRPC Connection
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !socketRef.current) {
       connectToChat();
     }
-    // distinct cleanup if real stream
   }, [isOpen]);
 
-  const connectToChat = () => {
+  const connectToChat = async () => {
+    if (!user.id) return;
+
     setIsConnecting(true);
-    // gRPC Logic:
-    // const client = new ChatServiceClient('http://localhost:8080'); // Envoy Proxy URL
-    // const stream = client.joinChat(new UserIdentity().setUserId(userId));
 
-    // stream.on('data', (response) => {
-    //   const msg = response.toObject();
-    //   setMessages(prev => [...prev, msg]);
-    // });
+    // Fetch History
+    try {
+      const res = await fetch(`/api/chat/history/${user.id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const result = await res.json();
+      if (result.data) setMessages(result.data.map(m => ({
+        ...m,
+        isAdmin: m.is_admin === 1,
+        time: new Date(m.created_at).toLocaleTimeString()
+      })));
+    } catch (err) {
+      console.error("History fetch failed", err);
+    }
 
-    // SIMULATION for Demo (since we lack Envoy):
-    setTimeout(() => {
+    // Initialize Socket
+    const socket = io('http://localhost:3000');
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
       setIsConnecting(false);
-      setMessages([
-        { id: 1, sender: 'admin', content: 'Halo! Ada yang bisa kami bantu?', isAdmin: true, time: new Date().toLocaleTimeString() }
-      ]);
-    }, 1000);
+      socket.emit('join', { userId: user.id, role: user.role });
+    });
+
+    socket.on('receive_message', (msg) => {
+      setMessages(prev => [...prev, {
+        ...msg,
+        isAdmin: msg.is_admin === 1,
+        time: new Date().toLocaleTimeString()
+      }]);
+    });
+
+    socket.on('disconnect', () => {
+      console.log("Chat disconnected");
+    });
   };
 
   const handleSend = () => {
-    if (!input.trim()) return;
+    if (!input.trim() || !socketRef.current) return;
 
-    const newMsg = {
-      id: Date.now(),
-      sender: userId,
+    const msgData = {
+      sender_id: user.id,
+      sender_name: user.name,
+      receiver_id: 'admin',
       content: input,
-      isAdmin: false,
-      time: new Date().toLocaleTimeString()
+      is_admin: false
     };
 
-    // UI Update (Optimistic)
-    setMessages(prev => [...prev, newMsg]);
+    socketRef.current.emit('send_message', msgData);
     setInput('');
-
-    // gRPC Call:
-    // const msgFn = new ChatMessage();
-    // msgFn.setSenderId(userId);
-    // msgFn.setContent(input);
-    // client.sendMessage(msgFn);
-
-    // Simulation Reply
-    setTimeout(() => {
-      setMessages(prev => [...prev, {
-        id: Date.now() + 1,
-        sender: 'admin',
-        content: 'Terima kasih, agen kami akan segera merespons.',
-        isAdmin: true,
-        time: new Date().toLocaleTimeString()
-      }]);
-    }, 2000);
   };
 
   return (
@@ -107,8 +111,8 @@ export default function ChatWidget({ userId = 'guest-001', userName = 'Guest' })
             {messages.map(msg => (
               <div key={msg.id} className={`flex ${msg.isAdmin ? 'justify-start' : 'justify-end'}`}>
                 <div className={`max-w-[80%] rounded-2xl p-3 text-xs shadow-sm ${msg.isAdmin
-                    ? 'bg-white text-gray-800 rounded-tl-none border border-gray-100'
-                    : 'bg-black text-white rounded-tr-none'
+                  ? 'bg-white text-gray-800 rounded-tl-none border border-gray-100'
+                  : 'bg-black text-white rounded-tr-none'
                   }`}>
                   <p>{msg.content}</p>
                   <p className={`text-[9px] mt-1 opacity-50 text-right`}>{msg.time}</p>

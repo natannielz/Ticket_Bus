@@ -26,6 +26,10 @@ export default function OperationsCenter() {
       const res = await fetch('/api/admin/operations/master-data', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
+      if (res.status === 401 || res.status === 403) {
+        window.location.href = '/login';
+        return;
+      }
       const result = await res.json();
       if (result.data) {
         setData(result.data);
@@ -109,6 +113,7 @@ export default function OperationsCenter() {
               <MapStrategyTab
                 armadas={data.armadas}
                 crews={data.crews}
+                schedules={data.schedules}
                 onRefresh={() => fetchMasterData(true)}
               />
             )}

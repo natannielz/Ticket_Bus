@@ -9,7 +9,13 @@ export default function Users() {
     fetch('/api/admin/users', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(res => {
+        if (res.status === 401 || res.status === 403) {
+          window.location.href = '/login';
+          throw new Error("Unauthorized");
+        }
+        return res.json();
+      })
       .then(data => {
         if (data.data) setUsers(data.data);
       });

@@ -27,8 +27,14 @@ export default function Login() {
       if (res.ok) {
         localStorage.setItem('token', result.token);
         localStorage.setItem('user', JSON.stringify(result.user));
-        navigate('/');
-        // Reload to update GuestLayout or use Context (reload is simpler hack)
+
+        // Role-based redirection
+        if (result.user.role === 'admin') {
+          navigate('/admin/operations');
+        } else {
+          navigate('/catalog');
+        }
+
         window.location.reload();
       } else {
         setErrors({ email: result.message || 'Login failed' });
@@ -56,7 +62,22 @@ export default function Login() {
         <div className="mx-auto w-full max-w-sm lg:w-96">
           <div>
             <h2 className="mt-6 text-3xl font-extrabold text-gray-900">Sign in to your account</h2>
-            <p className="mt-2 text-sm text-gray-600">
+            <div className="mt-4 p-4 bg-blue-50 border border-blue-100 rounded-xl space-y-2">
+              <p className="text-xs font-bold text-blue-800 uppercase tracking-wider">Demo Credentials</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-[10px] text-blue-600 font-semibold uppercase">Admin Access</p>
+                  <p className="text-sm font-mono text-gray-700">admin@example.com</p>
+                  <p className="text-sm font-mono text-gray-400 italic">pass: admin123</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-blue-600 font-semibold uppercase">User Access</p>
+                  <p className="text-sm font-mono text-gray-700">client@example.com</p>
+                  <p className="text-sm font-mono text-gray-400 italic">pass: client123</p>
+                </div>
+              </div>
+            </div>
+            <p className="mt-4 text-sm text-gray-600">
               Or{' '}
               <Link to="/register" className="font-medium text-accent-blue hover:text-accent">
                 register for free
@@ -66,6 +87,7 @@ export default function Login() {
 
           <div className="mt-8">
             <form onSubmit={submit} className="space-y-6">
+              {/* ... form fields ... */}
               <div>
                 <label htmlFor="email" className="block text-sm font-medium text-gray-700">
                   Email address
